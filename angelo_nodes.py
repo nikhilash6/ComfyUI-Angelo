@@ -858,7 +858,12 @@ _QUICK_REFINE_TILE_THRESHOLD_MP = 1.6
 # stage 2 then upscales the clean image and the tiles do the only job
 # tiles are good at — rendering known-good content crisply at the new
 # resolution — under this enhancement prompt (both model families).
-_UPSCALE_TILE_PROMPT = "high quality photo"
+_UPSCALE_TILE_PROMPT = "high quality image"
+# The upscalers say "image", not "photo" — they serve generations as much
+# as photographs (✨ Quick Photo Refine keeps its photo-specific wording).
+_UPSCALE_RESTORE_PROMPT = "restore the image"
+_UPSCALE_RESTORE_PROMPT_QWEN = ("lightly restore this old image, remove dust and scratches, "
+                                "improve sharpness and contrast, preserve original feel")
 # The upscale tile pass runs img2img-style: tiles start FROM the upscaled
 # image (denoise 0.55) and sharpen it rather than re-imagining it, with a
 # light anchor (ref 0.3 — fractional, so the dual-cond blend applies: two
@@ -2616,8 +2621,8 @@ class AngeloRefine:
             if str(upscale_mode) == "plain":
                 restored_lat, restored_px = current, current_pixels
             else:
-                restore_prompt = (_QUICK_REFINE_PROMPT_QWEN if current.dim() == 5
-                                  else _QUICK_REFINE_PROMPT)
+                restore_prompt = (_UPSCALE_RESTORE_PROMPT_QWEN if current.dim() == 5
+                                  else _UPSCALE_RESTORE_PROMPT)
                 if clip is not None:
                     tokens_r = clip.tokenize(restore_prompt)
                     restore_base = clip.encode_from_tokens_scheduled(tokens_r)
