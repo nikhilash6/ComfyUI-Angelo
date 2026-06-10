@@ -882,8 +882,14 @@ _UPSCALE_TILE_DENOISE = 0.55
 # (with a console line) when SAM 3 isn't installed.
 _FACE_POLISH_MIN_PX = 250        # min bbox edge, px
 _FACE_POLISH_MAX_MP = 1.0        # max bbox area, megapixels
-_FACE_POLISH_REF = 0.3
+# Per-flavour face-polish numbers. 2x RESTORE holds the face much closer
+# to the original (strong anchor — a restoration must not change who the
+# person is) while still re-rendering enough texture; 2x UPSCALE is freer
+# (clean sources, the face just needs crispness like everything else).
+_FACE_POLISH_REF = 0.3            # 2x Upscale (plain)
 _FACE_POLISH_DENOISE = 0.55
+_FACE_POLISH_RESTORE_REF = 0.75   # 2x Restore
+_FACE_POLISH_RESTORE_DENOISE = 0.7
 _FACE_POLISH_CTX_PAD = 64        # px context pad on the crop path
 _FACE_POLISH_CANVAS_MP = 1.6     # <= this: full-canvas context; above: Xtra-Fine crop
 _FACE_POLISH_CONF = 0.4
@@ -1088,6 +1094,8 @@ def _face_polish_pass(
     ov_guider=None,
     ov_sampler=None,
     ov_sigmas=None,
+    face_ref: float = _FACE_POLISH_REF,
+    face_denoise: float = _FACE_POLISH_DENOISE,
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
     """Automatic face polish on an upscaled result: SAM 3 (called
     in-process, not via the UI detect flow) finds faces; each face whose
@@ -1162,7 +1170,7 @@ def _face_polish_pass(
             f_seed = (seed + 31337 + i * 1000003) & 0xFFFFFFFFFFFFFFFF
 
             if canvas_mp <= _FACE_POLISH_CANVAS_MP:
-                pos = _apply_reference(positive_base, cur_lat.clone(), _FACE_POLISH_REF)
+                pos = _apply_reference(positive_base, cur_lat.clone(), face_ref)
                 noise = comfy.sample.prepare_noise(cur_lat, f_seed, None)
                 cur_lat = _do_sample(
                     guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
@@ -1170,7 +1178,7 @@ def _face_polish_pass(
                     steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
                     positive=pos, negative=negative,
                     source_latent=cur_lat,
-                    denoise=_FACE_POLISH_DENOISE,
+                    denoise=face_denoise,
                     noise_mask=mask,
                     callback=callback,
                     disable_pbar=disable_pbar,
@@ -1188,11 +1196,11 @@ def _face_polish_pass(
                     max_linear=8.0, resize_method="lanczos",
                     context_pad_pixel=pad,
                     inpainting_mode="Refine",
-                    reference_strength=_FACE_POLISH_REF,
+                    reference_strength=face_ref,
                     seed=f_seed, steps=steps, cfg=cfg,
                     sampler_name=sampler_name, scheduler=scheduler,
                     positive=positive_base, negative=negative,
-                    denoise=_FACE_POLISH_DENOISE,
+                    denoise=face_denoise,
                     callback=callback, disable_pbar=disable_pbar,
                     ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
                 )
@@ -2661,6 +2669,12 @@ class AngeloRefine:
                 tile_ref=_UPSCALE_TILE_REF, tile_denoise=_UPSCALE_TILE_DENOISE,
             )
             # ----- Stage 3: automatic face polish (needs SAM 3) -----
+            # Restore mode anchors faces much harder than plain upscale —
+            # a restoration must not change who the person is.
+            if str(upscale_mode) == "plain":
+                _f_ref, _f_den = _FACE_POLISH_REF, _FACE_POLISH_DENOISE
+            else:
+                _f_ref, _f_den = _FACE_POLISH_RESTORE_REF, _FACE_POLISH_RESTORE_DENOISE
             up_latent, up_pixels, _nf = _face_polish_pass(
                 model=model, vae=vae, latent=up_latent, pixels=up_pixels,
                 positive_base=up_base, negative=negative,
@@ -2668,6 +2682,7 @@ class AngeloRefine:
                 sampler_name=sampler_name, scheduler=scheduler,
                 callback=callback, disable_pbar=disable_pbar,
                 ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                face_ref=_f_ref, face_denoise=_f_den,
             )
             previewer = comfy_nodes.PreviewImage()
             ui_up = previewer.save_images(up_pixels, filename_prefix="Angelo_upscale")
