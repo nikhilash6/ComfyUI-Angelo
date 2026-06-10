@@ -821,14 +821,16 @@ def _refine_with_fine_upscaling(
     return new_latent, new_pixels
 
 
-# Quick Photo Refine: the one-click restoration recipe. The whole canvas is
-# re-rendered with this prompt, anchored to the current image via
-# reference_latents — identity from the reference, texture from the
-# re-render. Tested simple beats clever here: this exact phrase + a full-
-# strength reference behaves correctly (no saturation pump) at high
-# denoise; a longer keep-the-colours constraint was tried and removed.
-# Tuned here in ONE place if testing ever suggests otherwise.
+# Quick Photo Refine: the one-click restoration recipe — a MAGIC BUTTON
+# with its own fixed settings, deliberately independent of every toolbar
+# box. The whole canvas is re-rendered with this prompt, anchored to the
+# current image via reference_latents — identity from the reference,
+# texture from the re-render. Tested values; tuned here in ONE place.
+# (Simple beats clever on the prompt: a longer keep-the-colours
+# constraint was tried and removed — see git history.)
 _QUICK_REFINE_PROMPT = "high quality photo"
+_QUICK_REFINE_DENOISE = 0.8
+_QUICK_REFINE_REF = 0.8
 
 
 def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
@@ -1514,11 +1516,8 @@ class AngeloRefine:
 
                 # Reference toggle: ON/OFF for the anchored-refine feature;
                 # reference_strength (declared further down) is the 0–1
-                # blend it applies when ON. Manual refines use
-                # toggle AND strength; Quick Photo Refine uses the strength
-                # when the toggle is ON and defaults to a FULL anchor (1.0)
-                # when OFF — its classic recipe must not be neutered by the
-                # toggle's off-by-default state.
+                # blend it applies when ON. Manual refines only — Quick
+                # Photo Refine runs its own fixed recipe and ignores both.
                 "refine_reference": ("BOOLEAN", {"default": False,
                                                  "tooltip": "Anchor refines to the current image "
                                                             "(edit models). The strength box "
@@ -1527,11 +1526,11 @@ class AngeloRefine:
                                                             "button."}),
 
                 # Quick Photo Refine: the ✨ button bumps this. One-shot
-                # restoration pass — whole canvas, the internal
-                # _QUICK_REFINE_PROMPT, Reference anchor auto-applied, at
-                # the toolbar's DENOISE value (the one edit value it
-                # respects — 1.0 = full re-render, lower = gentler). Pushes
-                # a normal history entry so Undo covers it. Declared LAST.
+                # restoration pass — whole canvas, with the button's OWN
+                # fixed settings (_QUICK_REFINE_PROMPT / _DENOISE / _REF).
+                # A magic button: no toolbar box affects it except the
+                # seed. Pushes a normal history entry so Undo covers it.
+                # Declared LAST.
                 "quick_refine_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
 
                 # Reference strength (Refine + Quick Photo Refine): a TRUE
@@ -2178,20 +2177,16 @@ class AngeloRefine:
                 # positive flows through. Still works, just less targeted.
                 qr_positive = positive
             # Whole-image reference — IDENTICAL construction to the manual
-            # path (whole canvas painted). Reference toggle ON → the
-            # strength box drives it, literally (0 = un-anchored, warned in
-            # the JS toast). Toggle OFF → FULL anchor: ✨'s classic recipe
-            # must work out of the box.
-            if bool(refine_reference):
-                qr_strength = max(0.0, min(1.0, float(reference_strength)))
-            else:
-                qr_strength = 1.0
+            # path (whole canvas painted), at the button's own fixed
+            # strength. Magic button: NO toolbar box affects it (only the
+            # seed, for variation mashing).
+            qr_strength = _QUICK_REFINE_REF
             qr_positive = _apply_reference(qr_positive, current.clone(), qr_strength)
             qr_seed = int(seed)
             callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
             print(f"[Angelo quick-refine] whole-canvas restoration pass, "
-                  f"denoise={float(denoise):.2f}, ref={qr_strength:.2f}, seed={qr_seed}")
+                  f"denoise={_QUICK_REFINE_DENOISE}, ref={qr_strength}, seed={qr_seed}")
             noise = comfy.sample.prepare_noise(current, qr_seed, None)
             qr_refined = _do_sample(
                 guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
@@ -2199,7 +2194,7 @@ class AngeloRefine:
                 steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
                 positive=qr_positive, negative=negative,
                 source_latent=current,
-                denoise=float(denoise),
+                denoise=_QUICK_REFINE_DENOISE,
                 noise_mask=None,   # whole canvas — no mask
                 callback=callback,
                 disable_pbar=disable_pbar,

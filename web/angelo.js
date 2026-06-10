@@ -593,16 +593,14 @@ function attachPreviewCanvas(node) {
     node._AngeloVaryBtn = varyBtn;
 
     const quickFixBtn = makeActionButton("✨ Quick Photo Refine", () => triggerQuickPhotoRefine(node), "quickfix");
-    quickFixBtn.title = "One-click photo restoration. Re-renders the WHOLE image with the prompt "
-        + "\"high quality photo\", anchored to the current image as a reference — exactly as if "
-        + "you'd toggled Reference ON and painted the whole picture. Identity stays, texture "
-        + "re-renders. Uses the toolbar's DENOISE value: 1.0 = full re-render (strongest "
-        + "restoration), lower = gentler clean-up. Area Prompt and the toggles are ignored; the "
-        + "Seed applies too (leave Ctrl on randomize and mash the button for variations). Undo "
-        + "steps back if you don't like a pass.\n\n"
+    quickFixBtn.title = "One-click photo restoration — a true magic button with its own fixed "
+        + "recipe: whole image, prompt \"high quality photo\", denoise 0.8, reference anchor 0.8. "
+        + "Identity stays, texture re-renders. NO toolbar box affects it — Denoise, Reference, "
+        + "Area Prompt, toggles: all ignored. Only the Seed applies (leave Ctrl on randomize and "
+        + "mash the button for variations); Undo steps back through passes.\n\n"
         + "Needs an edit model (FLUX 2 Klein / Qwen-Image-Edit) + a wired CLIP — on non-edit "
-        + "models the reference is ignored, so at high denoise this REGENERATES the image instead "
-        + "(Undo brings it back). Refine mode only.";
+        + "models the reference is ignored, so this REGENERATES the image instead (Undo brings "
+        + "it back). Refine mode only.";
     row1.appendChild(quickFixBtn);
     node._AngeloQuickFixBtn = quickFixBtn;
 
@@ -3984,14 +3982,8 @@ function triggerQuickPhotoRefine(node) {
     const ws = findWidget(node, "quick_refine_seq");
     if (!ws) return;
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    // Reference OFF → Quick Refine defaults to a FULL anchor (its classic
-    // recipe). Reference ON → the strength box drives it, literally.
-    const refOn = !!(findWidget(node, "refine_reference")?.value);
-    const refV = refOn ? Number(findWidget(node, "reference_strength")?.value || 0) : 1.0;
-    _angeloToast(refV > 0
-        ? `✨ Quick Photo Refine — reference at ${Math.round(refV * 100)}%…`
-        : "✨ Quick Photo Refine — Reference strength 0: running UN-anchored (full regeneration at high denoise)");
-    dbg("queue quick photo refine", { quick_refine_seq: ws.value, refOn, ref: refV });
+    _angeloToast("✨ Quick Photo Refine — restoring (denoise 0.8, reference 0.8)…");
+    dbg("queue quick photo refine", { quick_refine_seq: ws.value });
     queuePrompt();
 }
 
