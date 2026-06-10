@@ -859,6 +859,13 @@ _QUICK_REFINE_TILE_THRESHOLD_MP = 1.6
 # tiles are good at — rendering known-good content crisply at the new
 # resolution — under this enhancement prompt (both model families).
 _UPSCALE_TILE_PROMPT = "high quality photo"
+# The upscale tile pass runs img2img-style: tiles start FROM the upscaled
+# image (denoise 0.55) and sharpen it rather than re-imagining it, with a
+# light anchor (ref 0.3 — fractional, so the dual-cond blend applies: two
+# positive evals per tile step). Restore passes keep the full 1.0/1.0
+# recipe — these numbers are for adding crispness, not repairing.
+_UPSCALE_TILE_REF = 0.3
+_UPSCALE_TILE_DENOISE = 0.55
 
 
 def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
@@ -926,6 +933,8 @@ def _tiled_restore_pass(
     ov_guider=None,
     ov_sampler=None,
     ov_sigmas=None,
+    tile_ref: float = _QUICK_REFINE_REF,
+    tile_denoise: float = _QUICK_REFINE_DENOISE,
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
     """The tiled restore engine: the Quick Photo Refine recipe run over
     overlapping ~1MP tiles, so the model never samples a latent bigger
@@ -1008,7 +1017,7 @@ def _tiled_restore_pass(
             tw = min(tile_lx, nlw - x0)
             th = min(tile_ly, nlh - y0)
             tile_lat = big_latent[..., y0:y0 + th, x0:x0 + tw].clone().contiguous()
-            tile_pos = _apply_reference(positive_base, tile_lat.clone(), _QUICK_REFINE_REF)
+            tile_pos = _apply_reference(positive_base, tile_lat.clone(), tile_ref)
             tile_seed = int(seed)
             noise = global_noise[..., y0:y0 + th, x0:x0 + tw].clone().contiguous()
             refined = _do_sample(
@@ -1017,7 +1026,7 @@ def _tiled_restore_pass(
                 steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
                 positive=tile_pos, negative=negative,
                 source_latent=tile_lat,
-                denoise=_QUICK_REFINE_DENOISE,
+                denoise=tile_denoise,
                 noise_mask=None,
                 callback=callback,
                 disable_pbar=disable_pbar,
@@ -2475,7 +2484,8 @@ class AngeloRefine:
                 up_base = clip.encode_from_tokens_scheduled(tokens_u)
             else:
                 up_base = positive
-            print("[Angelo 2x-restore] stage 2: 2x upscale + tiled quality pass")
+            print(f"[Angelo 2x-restore] stage 2: 2x upscale + tiled quality pass "
+                  f"(ref={_UPSCALE_TILE_REF}, denoise={_UPSCALE_TILE_DENOISE})")
             up_latent, up_pixels, _n2 = _tiled_restore_pass(
                 model=model, vae=vae,
                 current=restored_lat, current_pixels=restored_px,
@@ -2485,6 +2495,7 @@ class AngeloRefine:
                 sampler_name=sampler_name, scheduler=scheduler,
                 callback=callback, disable_pbar=disable_pbar,
                 ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                tile_ref=_UPSCALE_TILE_REF, tile_denoise=_UPSCALE_TILE_DENOISE,
             )
             previewer = comfy_nodes.PreviewImage()
             ui_up = previewer.save_images(up_pixels, filename_prefix="Angelo_upscale")
