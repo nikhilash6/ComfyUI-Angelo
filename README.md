@@ -75,7 +75,7 @@ Angelo treats **FLUX 2 Klein 9B** and **Qwen-Image-Edit** as its two first-class
 
 Two latent layouts are handled transparently. **Standard 4D models** (FLUX, SDXL, SD) use `[B, C, H, W]` latents. **Temporal / video-derived models** (Qwen Image Edit, Wan) use 5D `[B, C, T, H, W]` latents — their VAEs carry an extra frame axis. Angelo normalises latent shape at a single VAE boundary and feeds each model the dimensionality it expects before sampling (the same step ComfyUI's stock KSampler does), so you don't need a model-specific latent node — wire `model`, `vae`, and `clip` as usual.
 
-For the **Smart** inpaint modes, use an **edit-trained** checkpoint — **FLUX 2 Klein 9B** or **Qwen-Image-Edit** (not plain Qwen-Image, which has the reference code path but isn't trained for it; see [Inpainting Mode](#inpainting-mode-refine--smart-inpaint--smart-guided-inpaint)). **Refine** (incl. Xtra-Fine and Area Prompt) works on any model. **Outpaint** works on any model too, but is *best* on the edit models — they get an edge-band reference and follow the continue-the-scene instruction, which is what keeps extensions in-style and subjects un-duplicated.
+For the **Smart** inpaint modes, use an **edit-trained** checkpoint — **FLUX 2 Klein 9B** or **Qwen-Image-Edit** (not plain Qwen-Image, which has the reference code path but isn't trained for it; see [Inpainting Mode](#inpainting-mode-refine--smart-inpaint--smart-guided-inpaint--outpaint)). **Refine** (incl. Xtra-Fine and Area Prompt) works on any model. The **Reference** toggle (photo restoration) also needs an edit model to have an effect. **Outpaint** works on any model too, but is *best* on the edit models — they get an edge-band reference and follow the continue-the-scene instruction, which is what keeps extensions in-style and subjects un-duplicated.
 
 ## Install
 
@@ -178,8 +178,9 @@ The toolbar holds everything — there are no native widget rows. Top to bottom,
   [Steps] [CFG] [Sampler ▾] [Sched ▾]            ← shared generation config (always active)
   [Smpl Seed] [Smpl Ctrl ▾] [Smpl Denoise]       ← base-gen seed (greys in Edit Mode)
  ─────────────────────────────────────────
-  [Reset] [⟲⟳] [Re-roll] [Vary ×4] | [Persistent Mask] [Area Prompt] [Paint Mode] [Restore] [Xtra-Fine] | [Inpaint ▾]
+  [Reset] [⟲⟳] [Re-roll] [Vary ×4] | [Persistent Mask] [Area Prompt] [Paint Mode] [Restore] [Reference] [Xtra-Fine] | [Inpaint ▾]
   [Click R] [Feather] [Denoise] [Seed] [Ctrl ▾] | [MP] [Max] [Ctx Pad] [Method ▾]  ← edit block (greys in Sampler Mode)
+  [⛶ Outpaint: ← ↑ ↓ → All | Amount Overlap]                                       ← appears in Outpaint mode only
 ```
 
 The **Mode** switch sits centred up top, with **🖼 Load Image** beside it (both work in either mode). Below them, the generation block (always active, base-gen seed greys in Edit Mode); below the divider, the edit block (greys entirely in Sampler Mode). Toggle buttons show their state by **lighting up** when ON — no ON/OFF text. The Xtra-Fine values (`MP / Max / Ctx Pad / Method`) appear only while Xtra-Fine is ON. Every control has a hover tooltip. Quick reference:
@@ -212,7 +213,7 @@ The Overrides node also carries **`disable_live_preview`** — flip this ON if C
 | **Restore** | When ON, clicks / strokes / Detect masks **restore** the painted region back to the session's original base — a feathered latent blend, no sampling, instant. Bring back details an edit shouldn't have touched. Refine only |
 | **Reference** | When ON, the current image (or Xtra-Fine crop) is injected as a **reference** for edit models — identity is anchored from the reference instead of the noised latent, so Denoise can run high (0.7–1.0) for strong enhancement without losing the subject. The photo-restoration switch. Leave OFF when the Area Prompt wants to *change* the region (references anchor — they fight changes). Refine only; ignored by non-edit models |
 | **Xtra-Fine** | Crop the painted region, upscale via VAE + image upscale, refine at high effective resolution, composite back. ADetailer-style. Forced ON in Smart Inpaint, OFF in Smart Guided Inpaint |
-| **Inpaint ▾** | `Refine` / `Smart Inpaint` / `Smart Guided Inpaint`. See "Inpainting Mode" below |
+| **Inpaint ▾** | `Refine` / `Smart Inpaint` / `Smart Guided Inpaint` / `Outpaint`. See "Inpainting Mode" below |
 
 ### Edit block — refine values
 
@@ -312,7 +313,7 @@ The fine print:
 - Verify with **hold `\`** (before/after) and claw back any drifted detail with the **Restore brush** — the three tools were made for each other.
 - Non-edit models (SDXL, FLUX 1) ignore the reference — the toggle is harmless but does nothing there.
 
-## Inpainting Mode (Refine / Smart Inpaint / Smart Guided Inpaint)
+## Inpainting Mode (Refine / Smart Inpaint / Smart Guided Inpaint / Outpaint)
 
 Three options for how a region is treated. The two Smart modes need an **edit-trained model** (FLUX 2 Klein 9B, **Qwen-Image-Edit**, etc.) and a wired `CLIP`. They work by injecting `reference_latents`, so a **base** text-to-image checkpoint (e.g. plain Qwen-Image, not the *Edit* variant) will produce colour-distorted output — it has the reference code path but its weights were never trained for it. Use the Edit variant for Smart Inpaint / Smart Guided Inpaint; **Refine** works on any model.
 
