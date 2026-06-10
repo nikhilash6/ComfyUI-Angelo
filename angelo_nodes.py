@@ -828,9 +828,9 @@ def _refine_with_fine_upscaling(
 # texture from the re-render. Tested values; tuned here in ONE place.
 # (Simple beats clever on the prompt: a longer keep-the-colours
 # constraint was tried and removed — see git history.)
-_QUICK_REFINE_PROMPT = "high quality photo"
-_QUICK_REFINE_DENOISE = 1.0
-_QUICK_REFINE_REF = 0.8
+_QUICK_REFINE_PROMPT = "high quality photo. do not change colouring, do not change lighting."
+_QUICK_REFINE_DENOISE = 0.75
+_QUICK_REFINE_REF = 0.9
 
 
 def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
