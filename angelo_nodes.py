@@ -823,6 +823,13 @@ def _refine_with_fine_upscaling(
     return new_latent, new_pixels
 
 
+# Quick Photo Refine: the one-click restoration recipe. The whole canvas is
+# re-rendered at denoise 1.0 with this prompt, anchored to the current image
+# via reference_latents — identity from the reference, texture from the
+# re-render. Tuned here in ONE place if testing suggests better phrasing.
+_QUICK_REFINE_PROMPT = "high quality photo"
+
+
 # Direction-aware instruction prepended to the outpaint conditioning when a
 # CLIP is wired (same pattern as Smart Guided's location prefixes). Edit
 # models (Klein / Qwen) follow explicit continue-don't-repeat instructions
@@ -1487,6 +1494,13 @@ class AngeloRefine:
                                                             "high for photo restoration. Toggled "
                                                             "via the Reference button on the "
                                                             "toolbar."}),
+
+                # Quick Photo Refine: the ✨ button bumps this. One-shot
+                # restoration pass — whole canvas, denoise 1.0, the internal
+                # _QUICK_REFINE_PROMPT, Reference anchor auto-applied. Reads
+                # NONE of the toolbar edit values; pushes a normal history
+                # entry so Undo covers it. Declared LAST.
+                "quick_refine_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1592,6 +1606,7 @@ class AngeloRefine:
         outpaint_protect="",
         outpaint_instruction_pos="prepend",
         refine_reference=False,
+        quick_refine_seq=0,
         latent=None,
         clip=None,
         overrides=None,
@@ -1781,6 +1796,7 @@ class AngeloRefine:
                 "vary_pick_seq": vary_pick_seq,
                 "outpaint_seq": outpaint_seq,
                 "outpaint_accept_seq": outpaint_accept_seq,
+                "quick_refine_seq": quick_refine_seq,
                 "fingerprint": incoming_fp,
                 "sampler_seed_at_run": int(sampler_seed),
                 "loaded_seq": loaded_seq,
@@ -1857,6 +1873,7 @@ class AngeloRefine:
                 "vary_pick_seq": vary_pick_seq,
                 "outpaint_seq": outpaint_seq,
                 "outpaint_accept_seq": outpaint_accept_seq,
+                "quick_refine_seq": quick_refine_seq,
                 "fingerprint": incoming_fp,
                 "loaded_seq": loaded_seq,
                 # Source image (#3/#9): capture the base once, independent of
@@ -1951,6 +1968,7 @@ class AngeloRefine:
                     "vary_pick_seq": vary_pick_seq,
                     "outpaint_seq": outpaint_seq,
                     "outpaint_accept_seq": outpaint_accept_seq,
+                "quick_refine_seq": quick_refine_seq,
                     # Preserve the wired-latent fingerprint + load marker so
                     # the next run doesn't read the unchanged upstream as a
                     # fresh latent and blow away the canvas we just committed.
@@ -2093,6 +2111,58 @@ class AngeloRefine:
             state["outpaint_preview_refs"] = op_refs
             state["click_seq"] = click_seq
             state["refine_seed_at_run"] = op_seed
+
+        # ===== Quick Photo Refine: the one-click restoration recipe =====
+        # Whole canvas, denoise 1.0, the internal restoration prompt, and
+        # the Reference anchor — identity reconstructs from the reference
+        # while the texture fully re-renders. Deliberately reads NONE of
+        # the toolbar edit values (denoise / area prompt / toggles); the
+        # only live inputs are the seed (so seed_control = randomize lets
+        # you mash the button for variations) and the wired CLIP.
+        new_quick = (
+            inpainting_mode == "Refine"
+            and quick_refine_seq > 0
+            and quick_refine_seq != state.get("quick_refine_seq", -1)
+        )
+        state["quick_refine_seq"] = quick_refine_seq
+        if new_quick:
+            if clip is not None:
+                tokens_q = clip.tokenize(_QUICK_REFINE_PROMPT)
+                qr_positive = clip.encode_from_tokens_scheduled(tokens_q)
+            else:
+                # No CLIP → can't encode the restoration prompt; the main
+                # positive flows through. Still works, just less targeted.
+                qr_positive = positive
+            qr_positive = node_helpers.conditioning_set_values(
+                qr_positive, {"reference_latents": [current.clone()]}, append=False,
+            )
+            qr_seed = int(seed)
+            callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
+            disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+            print(f"[Angelo quick-refine] whole-canvas restoration pass, seed={qr_seed}")
+            noise = comfy.sample.prepare_noise(current, qr_seed, None)
+            qr_refined = _do_sample(
+                guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
+                model=model, noise=noise,
+                steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                positive=qr_positive, negative=negative,
+                source_latent=current,
+                denoise=1.0,
+                noise_mask=None,   # whole canvas — no mask
+                callback=callback,
+                disable_pbar=disable_pbar,
+                seed=qr_seed,
+            )
+            state["history"].append((qr_refined, None))
+            if len(state["history"]) > _HISTORY_CAP:
+                state["history"] = state["history"][-_HISTORY_CAP:]
+            state["redo_stack"] = []
+            state["vary_candidates"] = None
+            state["outpaint_pending"] = None
+            state["click_seq"] = click_seq
+            state["refine_seed_at_run"] = qr_seed
+            current = qr_refined
+            current_pixels = None
 
         # Has the user clicked since our last execution for this node?
         # Never treat a queue-hook click_seq bump as an edit in Outpaint

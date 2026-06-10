@@ -592,6 +592,18 @@ function attachPreviewCanvas(node) {
     row1.appendChild(varyBtn);
     node._AngeloVaryBtn = varyBtn;
 
+    const quickFixBtn = makeActionButton("✨ Quick Photo Refine", () => triggerQuickPhotoRefine(node), "quickfix");
+    quickFixBtn.title = "One-click photo restoration. Re-renders the WHOLE image at denoise 1.0 with "
+        + "the prompt \"high quality photo\", anchored to the current image as a reference — "
+        + "identity stays, texture fully re-renders. Ignores the toolbar's Denoise / Area Prompt / "
+        + "toggles entirely; only the Seed applies (leave Ctrl on randomize and mash the button "
+        + "for variations). Undo steps back if you don't like a pass.\n\n"
+        + "Needs an edit model (FLUX 2 Klein / Qwen-Image-Edit) + a wired CLIP — on non-edit "
+        + "models the reference is ignored and this would fully REGENERATE the image instead "
+        + "(Undo brings it back). Refine mode only.";
+    row1.appendChild(quickFixBtn);
+    node._AngeloQuickFixBtn = quickFixBtn;
+
     row1.appendChild(makeSeparator());
 
     const persistentMaskToggle = makeToggleButton("Persistent Mask", () => {
@@ -3926,6 +3938,23 @@ function triggerVaryPick(node, idx) {
     queuePrompt();
 }
 
+// Quick Photo Refine: the restoration recipe as one click. Python owns the
+// whole pass (whole-canvas, denoise 1.0, internal prompt, reference anchor)
+// — the JS only bumps the seq, so no toolbar values get mutated.
+function triggerQuickPhotoRefine(node) {
+    if (isAnySmartMode(node) || isOutpaintMode(node)) return;  // dimmed there anyway
+    if (!node._AngeloImg) {
+        _angeloToast("Generate or load an image first");
+        return;
+    }
+    const ws = findWidget(node, "quick_refine_seq");
+    if (!ws) return;
+    setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
+    _angeloToast("✨ Quick Photo Refine — full re-render, anchored to the current image…");
+    dbg("queue quick photo refine", { quick_refine_seq: ws.value });
+    queuePrompt();
+}
+
 // ===== Outpaint — directional canvas extension with review-before-commit =====
 
 function isOutpaintMode(node) {
@@ -4138,6 +4167,7 @@ function makeActionButton(label, onClick, kind = "neutral") {
         redo:    { fg: "#d2f3e2", bg: "rgba(48, 66, 60, 0.95)",  border: "rgba(110, 200, 160, 0.9)" },
         reroll:  { fg: "#ecdcff", bg: "rgba(58, 50, 72, 0.95)",  border: "rgba(170, 130, 220, 0.9)" },
         vary:    { fg: "#d8eeff", bg: "rgba(40, 62, 82, 0.95)",  border: "rgba(120, 190, 235, 0.9)" },
+        quickfix:{ fg: "#fff3d0", bg: "rgba(110, 85, 25, 0.95)", border: "rgba(240, 200, 90, 0.9)" },
         neutral: { fg: "#ccc",    bg: "#2a2a2a",                  border: "#555" },
     };
     const th = themes[kind] || themes.neutral;
@@ -4365,6 +4395,9 @@ function syncSmartInpaintLockedWidgets(node) {
     // Re-roll / Vary act on the edit history — confusing mid-outpaint,
     // and the review overlay's "Try again" covers the re-roll need.
     _dimControls(node, ["_AngeloRerollBtn", "_AngeloVaryBtn"], outp);
+
+    // Quick Photo Refine is a Refine-mode action.
+    _dimControls(node, ["_AngeloQuickFixBtn"], anySmart || outp);
 
     // Outpaint row visibility + input mirrors.
     syncOutpaintControls(node);
@@ -4782,6 +4815,8 @@ function hideMechanicalWidgets(node) {
         "outpaint_accept_seq", "outpaint_protect", "outpaint_instruction_pos",
         // Reference toggle — driven by the Reference button on the toolbar
         "refine_reference",
+        // Quick Photo Refine — driven by the ✨ button
+        "quick_refine_seq",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
