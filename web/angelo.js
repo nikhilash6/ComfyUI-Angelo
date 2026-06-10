@@ -654,23 +654,24 @@ function attachPreviewCanvas(node) {
     row1.appendChild(restoreToggle);
     node._AngeloRestoreToggle = restoreToggle;
 
-    const refineRefToggle = makeToggleButton("Reference", () => {
-        const w = findWidget(node, "refine_reference");
+    const refineRefInput = makeNumberInput("Ref", { min: 0, max: 1, step: 0.05, width: 50 }, (val) => {
+        const w = findWidget(node, "reference_strength");
         if (!w) return;
-        setWidget(w, !w.value);
-        syncRefineReferenceToggle(node);
+        setWidget(w, val);
     });
-    refineRefToggle.title = "Reference (Refine only) — inject the current image as a reference for "
-        + "edit models (FLUX 2 Klein / Qwen-Image-Edit). The edit branch anchors identity and "
-        + "content from the REFERENCE instead of the noised latent, so you can push Denoise much "
-        + "higher (0.7–1.0) for strong enhancement without losing the subject.\n\n"
-        + "The photo-restoration recipe: load a soft / low-quality photo, Reference ON, paint over "
-        + "it, Area Prompt \"sharp, high-quality photograph\", Denoise 0.8.\n\n"
-        + "Leave it OFF when your Area Prompt wants to CHANGE the region (e.g. \"smiling\") — the "
-        + "reference anchors, so it fights the change. With Xtra-Fine ON the reference is the "
-        + "upscaled crop. Ignored by non-edit models (SDXL etc.).";
-    row1.appendChild(refineRefToggle);
-    node._AngeloRefineRefToggle = refineRefToggle;
+    refineRefInput.title = "Reference strength (0–1, Refine mode) — how long the current image "
+        + "anchors the edit. The reference is attached for the FIRST this-fraction of the sampling "
+        + "schedule, then released: identity and layout lock in early, texture renders freely "
+        + "after. 0 = no reference (classic refine), 1 = anchored the whole way (strongest "
+        + "identity hold).\n\n"
+        + "Photo restoration: try 0.6–1.0 with high Denoise — identity stays while the texture "
+        + "fully re-renders. Applies to brush/click refines AND Quick Photo Refine (at 0, Quick "
+        + "Refine runs UN-anchored — it will regenerate the image at high denoise).\n\n"
+        + "Keep at 0 when your Area Prompt wants to CHANGE the region (e.g. \"smiling\") — "
+        + "anchoring fights the change. With Xtra-Fine ON the reference is the upscaled crop. "
+        + "Edit models only (Klein / Qwen); ignored elsewhere.";
+    row1.appendChild(refineRefInput);
+    node._AngeloRefineRefInput = refineRefInput;
 
     const fineUpscaleToggle = makeToggleButton("Xtra-Fine", () => {
         const w = findWidget(node, "fine_upscaling");
@@ -3952,8 +3953,11 @@ function triggerQuickPhotoRefine(node) {
     const ws = findWidget(node, "quick_refine_seq");
     if (!ws) return;
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    _angeloToast("✨ Quick Photo Refine — full re-render, anchored to the current image…");
-    dbg("queue quick photo refine", { quick_refine_seq: ws.value });
+    const refV = Number(findWidget(node, "reference_strength")?.value || 0);
+    _angeloToast(refV > 0
+        ? `✨ Quick Photo Refine — anchored for ${Math.round(refV * 100)}% of the schedule…`
+        : "✨ Quick Photo Refine — Ref is 0: running UN-anchored (full regeneration at high denoise)");
+    dbg("queue quick photo refine", { quick_refine_seq: ws.value, ref: refV });
     queuePrompt();
 }
 
@@ -4303,13 +4307,8 @@ function syncRestoreToggle(node) {
     _syncToggle(node._AngeloRestoreToggle, effective, _TOGGLE_ON_COLORS.amber);
 }
 
-function syncRefineReferenceToggle(node) {
-    // Refine-only: the Smart modes and Outpaint run their own reference
-    // logic, so display OFF there rather than a stale widget value.
-    const effective = (isAnySmartMode(node) || isOutpaintMode(node))
-        ? false
-        : findWidget(node, "refine_reference")?.value;
-    _syncToggle(node._AngeloRefineRefToggle, effective, _TOGGLE_ON_COLORS.sky);
+function syncReferenceStrengthInput(node) {
+    _syncNumberInput(node._AngeloRefineRefInput, findWidget(node, "reference_strength")?.value);
 }
 
 function syncFineUpscaleToggle(node) {
@@ -4377,7 +4376,7 @@ function syncSmartInpaintLockedWidgets(node) {
         "_AngeloFineUpscaleToggle",
         "_AngeloPaintModeToggle",
         "_AngeloRestoreToggle",
-        "_AngeloRefineRefToggle",
+        "_AngeloRefineRefInput",
         "_AngeloCtxPadInput",
     ], anySmart || outp);
     // Click R stays LIVE in Outpaint — it's the protect-brush size there.
@@ -4413,7 +4412,7 @@ function syncSmartInpaintLockedWidgets(node) {
     syncAreaPromptToggle(node);
     syncPersistentMaskToggle(node);
     syncRestoreToggle(node);
-    syncRefineReferenceToggle(node);
+    syncReferenceStrengthInput(node);
     syncAreaPromptVisibility(node);
     // Detect row hides in Smart Guided (no mask), shows in Refine/Smart Inpaint.
     syncDetectControls(node);
@@ -4656,7 +4655,7 @@ function syncAllToolbarControls(node) {
     syncAreaPromptToggle(node);
     syncPaintModeToggle(node);
     syncRestoreToggle(node);
-    syncRefineReferenceToggle(node);
+    syncReferenceStrengthInput(node);
     syncPromptSlotButtons(node);
     syncFineUpscaleToggle(node);
     syncClickRadiusInput(node);
@@ -4815,8 +4814,8 @@ function hideMechanicalWidgets(node) {
         // Outpaint — driven by the Outpaint row + edge-click + review overlay
         "outpaint_seq", "outpaint_dir", "outpaint_amount", "outpaint_overlap",
         "outpaint_accept_seq", "outpaint_protect", "outpaint_instruction_pos",
-        // Reference toggle — driven by the Reference button on the toolbar
-        "refine_reference",
+        // Reference — deprecated bool + the live strength value (Ref box)
+        "refine_reference", "reference_strength",
         // Quick Photo Refine — driven by the ✨ button
         "quick_refine_seq",
         // Toolbar-driven (visible via the bar above the canvas)

@@ -541,8 +541,9 @@ def _refine_with_fine_upscaling(
     resize_method: str,
     context_pad_pixel: int,
     inpainting_mode: str,
-    inject_reference: bool = False,   # Refine + Reference toggle: inject the
-                                      # (pre-refine) crop as reference_latents
+    reference_strength: float = 0.0,  # Refine + Ref value: anchor on the
+                                      # (pre-refine) crop for this fraction
+                                      # of the schedule (_apply_reference) —
                                       # WITHOUT Smart Inpaint's latent-zeroing
     seed: int = 0,
     steps: int,
@@ -611,12 +612,10 @@ def _refine_with_fine_upscaling(
         # whole-latent edit with NO crop reference, so the model worked on the
         # whole image instead of the selected rect.
         print(f"[Angelo fine-upscale] scale=1.0 — using latent-space path (no VAE round-trip)")
-        if inject_reference:
+        if reference_strength > 0.0:
             # Refine + Reference on the no-upscale path: anchor on the whole
             # current image (there's no crop on this path).
-            positive = node_helpers.conditioning_set_values(
-                positive, {"reference_latents": [current.clone()]}, append=False,
-            )
+            positive = _apply_reference(positive, current.clone(), reference_strength)
         noise = comfy.sample.prepare_noise(current, seed, None)
         new_latent = _do_sample(
             guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
@@ -753,15 +752,14 @@ def _refine_with_fine_upscaling(
         if latent_up.ndim == 5:
             sample_mask = (mask_crop_up >= 0.5).to(mask_crop_up.dtype)
         latent_up = (1.0 - sample_mask.unsqueeze(0)) * latent_up
-    elif inject_reference:
-        # Refine + Reference toggle: the upscaled (pre-refine) crop anchors
-        # identity/content through the edit branch, so a high denoise can
-        # fully re-render texture without losing the subject — the photo-
-        # restoration recipe. Unlike Smart Inpaint, the latent is NOT
+    elif reference_strength > 0.0:
+        # Refine + Reference value: the upscaled (pre-refine) crop anchors
+        # identity/content through the edit branch for the first
+        # reference_strength fraction of the schedule, so a high denoise
+        # can fully re-render texture without losing the subject — the
+        # photo-restoration recipe. Unlike Smart Inpaint, the latent is NOT
         # zeroed: the existing content remains the starting state.
-        positive = node_helpers.conditioning_set_values(
-            positive, {"reference_latents": [latent_up.clone()]}, append=False,
-        )
+        positive = _apply_reference(positive, latent_up.clone(), reference_strength)
 
     # ----- Refine via noise-injection inpaint on the upscaled latent -----
     noise = comfy.sample.prepare_noise(latent_up, seed, None)
@@ -831,6 +829,42 @@ def _refine_with_fine_upscaling(
 # denoise; a longer keep-the-colours constraint was tried and removed.
 # Tuned here in ONE place if testing ever suggests otherwise.
 _QUICK_REFINE_PROMPT = "high quality photo"
+
+
+def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
+    """Attach ref_latent as reference_latents with STRENGTH expressed as a
+    fraction of the sampling schedule (timestep-range construction).
+
+    There is no native scalar weight on reference_latents — the reference
+    becomes extra image tokens, take-it-or-leave-it. But conds CAN be
+    timestep-ranged, so strength here means duration of anchoring:
+
+      1.0      → one cond, reference attached for the whole schedule
+      0 < s <1 → TWO conds: [with-reference, 0→s] + [plain, s→1]. The
+                 reference anchors identity/layout while the early,
+                 structure-deciding steps run, then releases so texture
+                 renders freely. Exactly one cond is active per step, so
+                 there's no extra model evaluation cost.
+      0.0      → untouched (no reference)
+
+    The percents are fractions of the FULL schedule; at denoise < 1 the
+    run starts partway in, so the anchored portion shrinks proportionally.
+    """
+    s = max(0.0, min(1.0, float(strength)))
+    if s <= 0.0:
+        return positive
+    with_ref = node_helpers.conditioning_set_values(
+        positive, {"reference_latents": [ref_latent]}, append=False,
+    )
+    if s >= 1.0:
+        return with_ref
+    head = node_helpers.conditioning_set_values(
+        with_ref, {"start_percent": 0.0, "end_percent": s},
+    )
+    tail = node_helpers.conditioning_set_values(
+        positive, {"start_percent": s, "end_percent": 1.0},
+    )
+    return head + tail
 
 
 # Direction-aware instruction prepended to the outpaint conditioning when a
@@ -1480,23 +1514,13 @@ class AngeloRefine:
                 # (syncOutpaintPromptPreview). Declared LAST.
                 "outpaint_instruction_pos": (["prepend", "append"], {"default": "prepend"}),
 
-                # Reference toggle (Refine only): inject the current image
-                # (or the Xtra-Fine crop) as reference_latents so an edit
-                # model's branch anchors identity/content from the REFERENCE
-                # instead of the noised init latent. Breaks the restoration
-                # trade-off: denoise can run high (0.7–1.0) for strong
-                # texture re-rendering without losing the subject. A toggle,
-                # not a default — the reference ANCHORS, which fights Area
-                # Prompts that want to CHANGE the region. Ignored by
-                # non-edit models. Declared LAST.
+                # DEPRECATED — replaced by reference_strength below (the
+                # boolean became a 0–1 schedule-fraction value). Kept
+                # declared (like auto_decode) so positional widgets_values
+                # in saved workflows don't shift. run() ignores it.
                 "refine_reference": ("BOOLEAN", {"default": False,
-                                                 "tooltip": "When ON in Refine mode, the current "
-                                                            "image (or Xtra-Fine crop) is injected "
-                                                            "as a reference for edit models — "
-                                                            "anchors identity so Denoise can run "
-                                                            "high for photo restoration. Toggled "
-                                                            "via the Reference button on the "
-                                                            "toolbar."}),
+                                                 "tooltip": "(Deprecated — use the Ref value box; "
+                                                            "this widget is ignored.)"}),
 
                 # Quick Photo Refine: the ✨ button bumps this. One-shot
                 # restoration pass — whole canvas, the internal
@@ -1505,6 +1529,19 @@ class AngeloRefine:
                 # respects — 1.0 = full re-render, lower = gentler). Pushes
                 # a normal history entry so Undo covers it. Declared LAST.
                 "quick_refine_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
+
+                # Reference strength (Refine + Quick Photo Refine): 0–1
+                # fraction of the sampling schedule during which the current
+                # image (or Xtra-Fine crop) is attached as reference_latents
+                # — see _apply_reference. 0 = no reference (classic refine),
+                # 1 = anchored the whole way. Declared LAST.
+                "reference_strength": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                                                 "tooltip": "How long the current image anchors a "
+                                                            "refine: the reference is attached for "
+                                                            "the FIRST this-fraction of the "
+                                                            "schedule, then released. 0 = off, "
+                                                            "1 = whole way. Set via the Ref box "
+                                                            "on the toolbar."}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1611,6 +1648,7 @@ class AngeloRefine:
         outpaint_instruction_pos="prepend",
         refine_reference=False,
         quick_refine_seq=0,
+        reference_strength=0.0,
         latent=None,
         clip=None,
         overrides=None,
@@ -2137,19 +2175,18 @@ class AngeloRefine:
                 # No CLIP → can't encode the restoration prompt; the main
                 # positive flows through. Still works, just less targeted.
                 qr_positive = positive
-            # Full-strength whole-image reference — IDENTICAL to what the
-            # manual path does when the Reference toggle is on and the
-            # whole canvas is painted. Quick Refine is that recipe, not a
-            # variant of it. (A 0.6-scaled reference was tried and
-            # rejected; see git history.)
-            qr_positive = node_helpers.conditioning_set_values(
-                qr_positive, {"reference_latents": [current.clone()]}, append=False,
-            )
+            # Whole-image reference at the toolbar's Ref strength —
+            # IDENTICAL construction to the manual path (whole canvas
+            # painted). Quick Refine is that recipe, not a variant of it.
+            # At Ref 0 the pass runs UN-anchored (full regeneration at
+            # high denoise) — respected literally, warned in the JS toast.
+            qr_strength = max(0.0, min(1.0, float(reference_strength)))
+            qr_positive = _apply_reference(qr_positive, current.clone(), qr_strength)
             qr_seed = int(seed)
             callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
             print(f"[Angelo quick-refine] whole-canvas restoration pass, "
-                  f"denoise={float(denoise):.2f}, seed={qr_seed}")
+                  f"denoise={float(denoise):.2f}, ref={qr_strength:.2f}, seed={qr_seed}")
             noise = comfy.sample.prepare_noise(current, qr_seed, None)
             qr_refined = _do_sample(
                 guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
@@ -2384,22 +2421,19 @@ class AngeloRefine:
                     refine_positive, {"reference_latents": [reference_latent]}, append=True,
                 )
 
-            # Reference toggle (Refine only): anchor identity/content from
-            # the current image so high-denoise refines (photo restoration)
-            # keep the subject. Plain path injects the WHOLE current image
-            # here; the Xtra-Fine path injects its upscaled crop instead
-            # (inject_reference flag below). REPLACE, not append — the main
-            # positive may carry a stale upstream reference (Smart Inpaint
-            # lesson). Restore never samples, so it's excluded.
-            inject_ref = (
-                inpainting_mode == "Refine"
-                and bool(refine_reference)
-                and not restore_now
-            )
-            if inject_ref and not fine_upscaling:
-                refine_positive = node_helpers.conditioning_set_values(
-                    refine_positive, {"reference_latents": [refine_source.clone()]}, append=False,
-                )
+            # Reference strength (Refine only): anchor identity/content from
+            # the current image for the first reference_strength fraction of
+            # the schedule (timestep-range construction — _apply_reference),
+            # so high-denoise refines keep the subject. Plain path anchors
+            # on the WHOLE current image here; the Xtra-Fine path anchors on
+            # its upscaled crop instead (reference_strength passed below).
+            # Restore never samples, so it's excluded.
+            ref_strength = 0.0
+            if inpainting_mode == "Refine" and not restore_now:
+                ref_strength = max(0.0, min(1.0, float(reference_strength)))
+            if ref_strength > 0.0 and not fine_upscaling:
+                refine_positive = _apply_reference(
+                    refine_positive, refine_source.clone(), ref_strength)
 
             # One pass normally; four for Vary ×4. The conditioning above is
             # shared across passes — only the noise seed differs per pass.
@@ -2443,7 +2477,7 @@ class AngeloRefine:
                         resize_method=str(resize_method),
                         context_pad_pixel=int(fine_context_pad),
                         inpainting_mode=str(inpainting_mode),
-                        inject_reference=inject_ref,
+                        reference_strength=ref_strength,
                         seed=pass_seed, steps=steps, cfg=cfg,
                         sampler_name=sampler_name, scheduler=scheduler,
                         positive=refine_positive, negative=refine_negative,
