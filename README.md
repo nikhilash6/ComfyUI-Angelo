@@ -300,7 +300,7 @@ Notes:
 
 Got a soft, noisy, or low-quality photo? The fastest path is one button:
 
-**✨ Quick Photo Refine** (in the edit row, Refine mode only). One press re-renders the **whole image** with an internal restoration prompt (*"high quality photo"* plus a keep-the-original-colours/saturation/grading constraint — without it, edit models tend to "improve" the colour along with the texture), anchored to the current image as a reference — identity stays, texture re-renders. It respects exactly two toolbar values: **Denoise** (1.0 = full re-render, the strongest restoration; 0.5–0.7 = gentler clean-up) and the **Seed** — so leave Seed Ctrl on `randomize` and **mash the button to cycle restoration variations**, using Undo to step back through them (or `\` to compare against the original). Area Prompt and the toggles are ignored. Load photo → set Denoise → press → done.
+**✨ Quick Photo Refine** (in the edit row, Refine mode only). One press re-renders the **whole image** with an internal *"high quality photo"* prompt, anchored to the current image as a reference — exactly the same pass as toggling Reference ON and painting the whole picture, minus the painting — identity stays, texture re-renders. It respects exactly two toolbar values: **Denoise** (1.0 = full re-render, the strongest restoration; 0.5–0.7 = gentler clean-up) and the **Seed** — so leave Seed Ctrl on `randomize` and **mash the button to cycle restoration variations**, using Undo to step back through them (or `\` to compare against the original). Area Prompt and the toggles are ignored. Load photo → set Denoise → press → done.
 
 Want control over the prompt, the region, or the denoise level? The manual recipe underneath it is the **Reference** toggle:
 

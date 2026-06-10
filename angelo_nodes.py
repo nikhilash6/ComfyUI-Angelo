@@ -826,11 +826,11 @@ def _refine_with_fine_upscaling(
 # Quick Photo Refine: the one-click restoration recipe. The whole canvas is
 # re-rendered with this prompt, anchored to the current image via
 # reference_latents — identity from the reference, texture from the
-# re-render. The keep-the-colours constraint matters: without it, edit
-# models tend to "improve" saturation and grading along with the texture.
-# Tuned here in ONE place if testing suggests better phrasing.
-_QUICK_REFINE_PROMPT = ("high quality photo. Keep the original colors, "
-                        "saturation and color grading exactly the same.")
+# re-render. Tested simple beats clever here: this exact phrase + a full-
+# strength reference behaves correctly (no saturation pump) at high
+# denoise; a longer keep-the-colours constraint was tried and removed.
+# Tuned here in ONE place if testing ever suggests otherwise.
+_QUICK_REFINE_PROMPT = "high quality photo"
 
 
 # Direction-aware instruction prepended to the outpaint conditioning when a
@@ -2137,6 +2137,11 @@ class AngeloRefine:
                 # No CLIP → can't encode the restoration prompt; the main
                 # positive flows through. Still works, just less targeted.
                 qr_positive = positive
+            # Full-strength whole-image reference — IDENTICAL to what the
+            # manual path does when the Reference toggle is on and the
+            # whole canvas is painted. Quick Refine is that recipe, not a
+            # variant of it. (A 0.6-scaled reference was tried and
+            # rejected; see git history.)
             qr_positive = node_helpers.conditioning_set_values(
                 qr_positive, {"reference_latents": [current.clone()]}, append=False,
             )
