@@ -1909,6 +1909,16 @@ class AngeloRefine:
                 # pass); "plain" = stage 2 only — for images that are
                 # already clean and just need size + crispness.
                 "upscale_mode": ("STRING", {"default": "restore", "multiline": False}),
+
+                # Faces toggle on the Quick Actions bar: whether the upscale
+                # buttons finish with the automatic face-polish stage.
+                # Defaults ON; the toggle exists so the final pass can be
+                # removed when it isn't wanted. Declared LAST.
+                "face_polish": ("BOOLEAN", {"default": True,
+                                            "tooltip": "Run the automatic face-polish stage at "
+                                                       "the end of the 2x upscale buttons. "
+                                                       "Toggled via the Faces button on the "
+                                                       "Quick Actions bar."}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -2018,6 +2028,7 @@ class AngeloRefine:
         reference_strength=0.0,
         upscale_seq=0,
         upscale_mode="restore",
+        face_polish=True,
         latent=None,
         clip=None,
         overrides=None,
@@ -2670,20 +2681,24 @@ class AngeloRefine:
             )
             # ----- Stage 3: automatic face polish (needs SAM 3) -----
             # Restore mode anchors faces much harder than plain upscale —
-            # a restoration must not change who the person is.
-            if str(upscale_mode) == "plain":
-                _f_ref, _f_den = _FACE_POLISH_REF, _FACE_POLISH_DENOISE
+            # a restoration must not change who the person is. The Faces
+            # toggle on the Quick Actions bar can remove the stage entirely.
+            if bool(face_polish):
+                if str(upscale_mode) == "plain":
+                    _f_ref, _f_den = _FACE_POLISH_REF, _FACE_POLISH_DENOISE
+                else:
+                    _f_ref, _f_den = _FACE_POLISH_RESTORE_REF, _FACE_POLISH_RESTORE_DENOISE
+                up_latent, up_pixels, _nf = _face_polish_pass(
+                    model=model, vae=vae, latent=up_latent, pixels=up_pixels,
+                    positive_base=up_base, negative=negative,
+                    seed=up_seed, steps=steps, cfg=cfg,
+                    sampler_name=sampler_name, scheduler=scheduler,
+                    callback=callback, disable_pbar=disable_pbar,
+                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                    face_ref=_f_ref, face_denoise=_f_den,
+                )
             else:
-                _f_ref, _f_den = _FACE_POLISH_RESTORE_REF, _FACE_POLISH_RESTORE_DENOISE
-            up_latent, up_pixels, _nf = _face_polish_pass(
-                model=model, vae=vae, latent=up_latent, pixels=up_pixels,
-                positive_base=up_base, negative=negative,
-                seed=up_seed, steps=steps, cfg=cfg,
-                sampler_name=sampler_name, scheduler=scheduler,
-                callback=callback, disable_pbar=disable_pbar,
-                ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
-                face_ref=_f_ref, face_denoise=_f_den,
-            )
+                print("[Angelo face-polish] disabled via the Faces toggle")
             previewer = comfy_nodes.PreviewImage()
             ui_up = previewer.save_images(up_pixels, filename_prefix="Angelo_upscale")
             state["outpaint_pending"] = (up_latent, up_pixels)

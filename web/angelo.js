@@ -897,6 +897,22 @@ function attachPreviewCanvas(node) {
     quickRow.appendChild(upscalePlainBtn);
     node._AngeloUpscalePlainBtn = upscalePlainBtn;
 
+    const facePolishToggle = makeToggleButton("Faces", () => {
+        const w = findWidget(node, "face_polish");
+        if (!w) return;
+        setWidget(w, !w.value);
+        syncFacePolishToggle(node);
+    });
+    facePolishToggle.title = "Final face refinement for the 2x upscale buttons (ON by default). "
+        + "After the upscale, SAM 3 finds every face between 250px and ~1MP and gives each a "
+        + "centred circular refine — anchored hard on 2x Restore (ref 0.75 / denoise 0.7, so a "
+        + "restoration never changes who the person is), freer on 2x Upscale (ref 0.3 / denoise "
+        + "0.55, just crispness). Turn OFF to skip the stage entirely — e.g. non-portrait work, "
+        + "or when you'd rather polish faces by hand with Detect + Fix All afterwards. "
+        + "Needs the optional SAM 3 install; without it the stage is skipped silently either way.";
+    quickRow.appendChild(facePolishToggle);
+    node._AngeloFacePolishToggle = facePolishToggle;
+
     // ===== OUTPAINT ROW: direction + amount (Outpaint mode only) =====
     // Arrows extend the canvas in that direction; "All" pads every side
     // (zoom-out). The same action is available by clicking near an edge
@@ -4422,6 +4438,10 @@ function syncRestoreToggle(node) {
     _syncToggle(node._AngeloRestoreToggle, effective, _TOGGLE_ON_COLORS.amber);
 }
 
+function syncFacePolishToggle(node) {
+    _syncToggle(node._AngeloFacePolishToggle, findWidget(node, "face_polish")?.value, _TOGGLE_ON_COLORS.green);
+}
+
 function syncReferenceControls(node) {
     // Effective OFF in the Smart modes / Outpaint (their own reference
     // logic) regardless of the stored widget value.
@@ -4781,6 +4801,7 @@ function syncAllToolbarControls(node) {
     syncPaintModeToggle(node);
     syncRestoreToggle(node);
     syncReferenceControls(node);
+    syncFacePolishToggle(node);
     syncPromptSlotButtons(node);
     syncFineUpscaleToggle(node);
     syncClickRadiusInput(node);
@@ -4943,8 +4964,8 @@ function hideMechanicalWidgets(node) {
         "refine_reference", "reference_strength",
         // Quick Photo Refine — driven by the ✨ button
         "quick_refine_seq",
-        // 2× Restore / 2× Upscale — driven by the ⬆ buttons
-        "upscale_seq", "upscale_mode",
+        // 2× Restore / 2× Upscale — driven by the ⬆ buttons + Faces toggle
+        "upscale_seq", "upscale_mode", "face_polish",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
