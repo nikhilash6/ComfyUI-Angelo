@@ -824,10 +824,13 @@ def _refine_with_fine_upscaling(
 
 
 # Quick Photo Refine: the one-click restoration recipe. The whole canvas is
-# re-rendered at denoise 1.0 with this prompt, anchored to the current image
-# via reference_latents — identity from the reference, texture from the
-# re-render. Tuned here in ONE place if testing suggests better phrasing.
-_QUICK_REFINE_PROMPT = "high quality photo"
+# re-rendered with this prompt, anchored to the current image via
+# reference_latents — identity from the reference, texture from the
+# re-render. The keep-the-colours constraint matters: without it, edit
+# models tend to "improve" saturation and grading along with the texture.
+# Tuned here in ONE place if testing suggests better phrasing.
+_QUICK_REFINE_PROMPT = ("high quality photo. Keep the original colors, "
+                        "saturation and color grading exactly the same.")
 
 
 # Direction-aware instruction prepended to the outpaint conditioning when a

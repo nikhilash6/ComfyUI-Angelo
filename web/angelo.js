@@ -593,8 +593,9 @@ function attachPreviewCanvas(node) {
     node._AngeloVaryBtn = varyBtn;
 
     const quickFixBtn = makeActionButton("✨ Quick Photo Refine", () => triggerQuickPhotoRefine(node), "quickfix");
-    quickFixBtn.title = "One-click photo restoration. Re-renders the WHOLE image with the prompt "
-        + "\"high quality photo\", anchored to the current image as a reference — identity stays, "
+    quickFixBtn.title = "One-click photo restoration. Re-renders the WHOLE image with an internal "
+        + "restoration prompt (\"high quality photo\" + keep the original colours, saturation and "
+        + "grading the same), anchored to the current image as a reference — identity stays, "
         + "texture re-renders. Uses the toolbar's DENOISE value: 1.0 = full re-render (strongest "
         + "restoration), lower = gentler clean-up. Area Prompt and the toggles are ignored; the "
         + "Seed applies too (leave Ctrl on randomize and mash the button for variations). Undo "
