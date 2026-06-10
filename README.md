@@ -370,7 +370,13 @@ Controls on the Outpaint row:
 
 **Painting right at the frame edge: hold Shift.** The edge zone normally belongs to the extend-click — so to start a protect stroke on something flush against the border (where protection matters most), **hold Shift and the brush wins everywhere**: the glowing band is suppressed and your drag paints, all the way to the edge. Same convention as Detect's Shift touch-up brush. (Without Shift you can still get there by starting the stroke in the interior and dragging outward.)
 
-**How the prompt works in Outpaint (anti-duplication).** With a `CLIP` wired, the outpaint pass encodes its *own* prompt: a direction-aware instruction (*"Extend the image to the right, continuing the scene and background naturally. Do not repeat or add new subjects."*) plus your Area Prompt text if it's on. Your main scene prompt is deliberately **not** used — conditioning the new strip on *"a red car on a road"* is exactly what paints a second car into it. So: **wire the CLIP** (you probably already have), and use the Area Prompt to describe the *continuation* ("empty coastal road, sea, sky"), not the subject.
+**How the prompt works in Outpaint (anti-duplication).** Whether your main prompt affects an outpaint depends on exactly one thing — whether the `clip` input is wired:
+
+- **CLIP wired** (the normal setup): your main positive prompt has **zero effect** on the extension. The outpaint encodes its *own* prompt: a direction-aware instruction (*"Extend the image downward, continuing the scene and background naturally. Do not repeat or add new subjects."*) plus your Area Prompt text **only if that toggle is ON**. Area Prompt off = the instruction alone is the entire conditioning, and the scene knowledge comes from the edge-band reference and the seam context instead. So loading a photo and immediately hitting ↓ extends it purely from the photo — whatever happens to be typed in your workflow's prompt boxes is a bystander.
+- **CLIP not wired**: Angelo can't encode anything, so your main prompt flows through unchanged — and conditioning the new strip on *"a red car on a road"* is exactly what paints a second car into it. **Wire the CLIP.**
+- Fine print: the main *negative* still falls through in both cases (unless you've typed an Area negative) — irrelevant at CFG 1 on distilled models like Klein, mildly relevant on CFG > 1 models.
+
+Use the Area Prompt to describe the *continuation* ("empty coastal road, sea, sky"), never the subject.
 
 Notes:
 
