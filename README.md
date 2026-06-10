@@ -356,13 +356,17 @@ Controls on the Outpaint row:
 - **Amount** — pixels to extend by (snapped to /16 so any VAE lands on clean latent cells). The edge-hover band displays it live.
 - **Overlap** — a feathered band reaching this many pixels *into* the existing image that gets redrawn along with the strip, so the seam blends instead of butting. Default 64.
 
+**The protect brush — keep the seam away from your subject.** A generous Overlap blends beautifully, but if the band reaches into a subject near the frame edge (a car, a face), the model is allowed to redraw part of it — and partially-redrawable subjects at a generation boundary are how you get smeared extensions and accidental twins. So: **drag in the canvas interior to paint a red protect region** (brush size = Click R). Protected pixels are excluded from the overlap band — frozen bit-exact — while the rest of the seam still blends at full width. Run Overlap at 128 for a clean blend *and* paint over the car: best of both. The same gesture Photoshop's Content-Aware Fill uses for sampling exclusion. Protect circles survive Try-again (same extension, fresh seed) and clear via the **✕ Protect** chip, on Accept, or when you leave Outpaint mode.
+
+**How the prompt works in Outpaint (anti-duplication).** With a `CLIP` wired, the outpaint pass encodes its *own* prompt: a direction-aware instruction (*"Extend the image to the right, continuing the scene and background naturally. Do not repeat or add new subjects."*) plus your Area Prompt text if it's on. Your main scene prompt is deliberately **not** used — conditioning the new strip on *"a red car on a road"* is exactly what paints a second car into it. So: **wire the CLIP** (you probably already have), and use the Area Prompt to describe the *continuation* ("empty coastal road, sea, sky"), not the subject.
+
 Notes:
 
-- **Area Prompt stays live** in Outpaint — use it to say what's in the new space (*"a pier stretching into the sea"*). Without it, the main prompt carries the scene.
-- On **FLUX 2 Klein / Qwen-Image-Edit**, the original image is injected as a reference so the edit branch continues the scene in-style — outpainting is what these models are great at. On non-edit models it's a standard high-denoise fill (harmless, just less style-locked).
+- On **FLUX 2 Klein / Qwen-Image-Edit**, the **edge-adjacent band** (~512px) of the existing image is injected as a reference — the texture and lighting to continue, without re-showing the model your subject (whole-image references invite edit models to reproduce the subject into the strip). ⛶ All uses the whole image, since everything borders the new space. Non-edit models ignore the reference and rely on the seam context — standard high-denoise fill.
 - **Corners handle themselves**: every extension spans the full current edge, so extending right *then* down generates the bottom-right corner as part of the down-pass, with both neighbours as context. Extend in any order.
-- The existing image stays **bit-exact** — the original latent is pasted back over the old region after the pad, so there's no VAE round-trip drift outside the seam band.
+- The existing image stays **bit-exact** — the original latent is pasted back over the old region after the pad, so there's no VAE round-trip drift outside the seam band (and none at all under a protect region).
 - **⛶ All** extends all four sides at once — the zoom-out move.
+- **The preview will look smaller after an outpaint** — the image got bigger but the node didn't, so the fit-to-node display scales everything down. The pixels are all there; check via right-click → open in new tab.
 
 ## Detect — auto-segment with SAM 3 (optional)
 
