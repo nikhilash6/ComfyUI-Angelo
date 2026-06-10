@@ -593,13 +593,14 @@ function attachPreviewCanvas(node) {
     node._AngeloVaryBtn = varyBtn;
 
     const quickFixBtn = makeActionButton("✨ Quick Photo Refine", () => triggerQuickPhotoRefine(node), "quickfix");
-    quickFixBtn.title = "One-click photo restoration. Re-renders the WHOLE image at denoise 1.0 with "
-        + "the prompt \"high quality photo\", anchored to the current image as a reference — "
-        + "identity stays, texture fully re-renders. Ignores the toolbar's Denoise / Area Prompt / "
-        + "toggles entirely; only the Seed applies (leave Ctrl on randomize and mash the button "
-        + "for variations). Undo steps back if you don't like a pass.\n\n"
+    quickFixBtn.title = "One-click photo restoration. Re-renders the WHOLE image with the prompt "
+        + "\"high quality photo\", anchored to the current image as a reference — identity stays, "
+        + "texture re-renders. Uses the toolbar's DENOISE value: 1.0 = full re-render (strongest "
+        + "restoration), lower = gentler clean-up. Area Prompt and the toggles are ignored; the "
+        + "Seed applies too (leave Ctrl on randomize and mash the button for variations). Undo "
+        + "steps back if you don't like a pass.\n\n"
         + "Needs an edit model (FLUX 2 Klein / Qwen-Image-Edit) + a wired CLIP — on non-edit "
-        + "models the reference is ignored and this would fully REGENERATE the image instead "
+        + "models the reference is ignored, so at high denoise this REGENERATES the image instead "
         + "(Undo brings it back). Refine mode only.";
     row1.appendChild(quickFixBtn);
     node._AngeloQuickFixBtn = quickFixBtn;

@@ -1496,10 +1496,11 @@ class AngeloRefine:
                                                             "toolbar."}),
 
                 # Quick Photo Refine: the ✨ button bumps this. One-shot
-                # restoration pass — whole canvas, denoise 1.0, the internal
-                # _QUICK_REFINE_PROMPT, Reference anchor auto-applied. Reads
-                # NONE of the toolbar edit values; pushes a normal history
-                # entry so Undo covers it. Declared LAST.
+                # restoration pass — whole canvas, the internal
+                # _QUICK_REFINE_PROMPT, Reference anchor auto-applied, at
+                # the toolbar's DENOISE value (the one edit value it
+                # respects — 1.0 = full re-render, lower = gentler). Pushes
+                # a normal history entry so Undo covers it. Declared LAST.
                 "quick_refine_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
             },
             "optional": {
@@ -2113,12 +2114,12 @@ class AngeloRefine:
             state["refine_seed_at_run"] = op_seed
 
         # ===== Quick Photo Refine: the one-click restoration recipe =====
-        # Whole canvas, denoise 1.0, the internal restoration prompt, and
-        # the Reference anchor — identity reconstructs from the reference
-        # while the texture fully re-renders. Deliberately reads NONE of
-        # the toolbar edit values (denoise / area prompt / toggles); the
-        # only live inputs are the seed (so seed_control = randomize lets
-        # you mash the button for variations) and the wired CLIP.
+        # Whole canvas, the internal restoration prompt, and the Reference
+        # anchor — identity reconstructs from the reference while the
+        # texture re-renders. The toolbar DENOISE applies (1.0 = full
+        # re-render, the strongest restoration; lower = gentler clean-up);
+        # area prompt / toggles are ignored. The seed also applies, so
+        # seed_control = randomize lets you mash the button for variations.
         new_quick = (
             inpainting_mode == "Refine"
             and quick_refine_seq > 0
@@ -2139,7 +2140,8 @@ class AngeloRefine:
             qr_seed = int(seed)
             callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
-            print(f"[Angelo quick-refine] whole-canvas restoration pass, seed={qr_seed}")
+            print(f"[Angelo quick-refine] whole-canvas restoration pass, "
+                  f"denoise={float(denoise):.2f}, seed={qr_seed}")
             noise = comfy.sample.prepare_noise(current, qr_seed, None)
             qr_refined = _do_sample(
                 guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
@@ -2147,7 +2149,7 @@ class AngeloRefine:
                 steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
                 positive=qr_positive, negative=negative,
                 source_latent=current,
-                denoise=1.0,
+                denoise=float(denoise),
                 noise_mask=None,   # whole canvas — no mask
                 callback=callback,
                 disable_pbar=disable_pbar,

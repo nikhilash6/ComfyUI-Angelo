@@ -45,7 +45,7 @@ Angelo collapses all of it into one node:
 - **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed. **Six Prompt Slots** keep your presets one click away.
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
 - **Reference toggle for photo restoration** — anchor the subject's identity from the current image while refining at *high* denoise. Load a soft old photo, Reference ON, paint over it, Area Prompt "sharp, high-quality photograph", denoise 0.8 — full texture re-render, same person.
-- **✨ Quick Photo Refine** — or skip the recipe entirely: one button runs the whole restoration pass (full canvas, denoise 1.0, restoration prompt, reference anchor). Load photo, press, done. Mash it with seed-randomize for variations; Undo any pass you don't like.
+- **✨ Quick Photo Refine** — or skip the recipe entirely: one button runs the whole restoration pass (full canvas, restoration prompt, reference anchor, at your Denoise setting — 1.0 for the full re-render). Load photo, press, done. Mash it with seed-randomize for variations; Undo any pass you don't like.
 
 **Add & extend — put new things in, grow the frame**
 
@@ -208,7 +208,7 @@ The Overrides node also carries **`disable_live_preview`** — flip this ON if C
 | **⟲ / ⟳** (Undo / Redo) | Pop the most recent refine off the history stack (up to 10 deep) / re-apply the one Undo removed. A new edit clears the redo history. Button-only (no Ctrl-Z/Y — those clash with ComfyUI's graph undo) |
 | **Re-roll** | Redo the most recent edit with a fresh seed on the **same mask + same starting image**, replacing the last attempt — cycle seeds on one edit without reset → re-mask → rerun. Works for click / paint / rectangle / detected masks |
 | **Vary ×4** | Re-roll's big sibling: generate **four** variations of the most recent edit at once (same mask, same starting image, four seeds), then click your favourite in a 2×2 chooser overlay. The pick replaces the last attempt; ✕ / Esc keeps the current result — nothing commits until you choose |
-| **✨ Quick Photo Refine** | One-click photo restoration: whole image, denoise 1.0, internal "high quality photo" prompt, reference anchor — identity stays, texture re-renders. Ignores the toolbar edit values (only Seed applies). Edit models + CLIP; Refine mode only. See "Photo restoration" |
+| **✨ Quick Photo Refine** | One-click photo restoration: whole image, internal "high quality photo" prompt, reference anchor — identity stays, texture re-renders. Respects **Denoise** (1.0 = full re-render) + **Seed**; ignores everything else. Edit models + CLIP; Refine mode only. See "Photo restoration" |
 | **Persistent Mask** | Hold the last mask, then hit Queue repeatedly to keep refining that region on the **latest** result — each press builds further, so you can gradually morph it (pair with `Ctrl=randomize`). For variations on the *original* image instead, use **Re-roll**. Locked OFF in Smart Guided Inpaint (no mask) |
 | **Area Prompt** | Refine with the Area Prompt text typed in the box above the canvas (encoded with the connected `CLIP`) instead of the main prompt. Requires a `CLIP` input + non-empty text. The box only appears when this is ON. Forced ON in both Smart modes |
 | **Paint Mode** | Hold + drag to paint a freeform stroke as the mask, instead of single-circle clicks (Refine only) |
@@ -300,7 +300,7 @@ Notes:
 
 Got a soft, noisy, or low-quality photo? The fastest path is one button:
 
-**✨ Quick Photo Refine** (in the edit row, Refine mode only). One press re-renders the **whole image** at denoise 1.0 with an internal *"high quality photo"* prompt, anchored to the current image as a reference — identity stays, texture fully re-renders. It ignores the toolbar's Denoise / Area Prompt / toggles entirely; only the **Seed** applies, so leave Seed Ctrl on `randomize` and **mash the button to cycle restoration variations**, using Undo to step back through them (or `\` to compare against the original). Load photo → press → done.
+**✨ Quick Photo Refine** (in the edit row, Refine mode only). One press re-renders the **whole image** with an internal *"high quality photo"* prompt, anchored to the current image as a reference — identity stays, texture re-renders. It respects exactly two toolbar values: **Denoise** (1.0 = full re-render, the strongest restoration; 0.5–0.7 = gentler clean-up) and the **Seed** — so leave Seed Ctrl on `randomize` and **mash the button to cycle restoration variations**, using Undo to step back through them (or `\` to compare against the original). Area Prompt and the toggles are ignored. Load photo → set Denoise → press → done.
 
 Want control over the prompt, the region, or the denoise level? The manual recipe underneath it is the **Reference** toggle:
 
@@ -317,7 +317,7 @@ The fine print:
 - **It anchors.** That's the whole point — and it means Reference ON fights any Area Prompt that wants to *change* the region ("smiling", "eyes open"). Restoration ON, reshaping OFF.
 - With **Xtra-Fine ON**, the reference is the upscaled crop — so the small-region restoration (a face in an old group photo) gets both the resolution boost *and* the identity anchor. This combination is the strongest move in the node for old photos.
 - Verify with **hold `\`** (before/after) and claw back any drifted detail with the **Restore brush** — the three tools were made for each other.
-- Non-edit models (SDXL, FLUX 1) ignore the reference — the toggle is harmless but does nothing there. **Quick Photo Refine, however, is NOT harmless on non-edit models**: with the reference ignored, its denoise-1.0 full-canvas pass simply regenerates the image. Undo brings it back, but the button is for edit models.
+- Non-edit models (SDXL, FLUX 1) ignore the reference — the toggle is harmless but does nothing there. **Quick Photo Refine, however, is NOT harmless on non-edit models**: with the reference ignored, a high-denoise full-canvas pass simply regenerates the image. Undo brings it back, but the button is for edit models.
 
 ## Inpainting Mode (Refine / Smart Inpaint / Smart Guided Inpaint / Outpaint)
 
