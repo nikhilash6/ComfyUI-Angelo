@@ -850,6 +850,11 @@ _QUICK_REFINE_REF = 1.0
 # same reason.
 _TILE_PX = 1024
 _TILE_OVERLAP_PX = 128
+# The UPSCALE tile pass uses a wider overlap: at big canvases each tile
+# sees a sliver of the scene, so neighbouring renders drift slightly in
+# tone and a narrow crossfade shows the step. 25% of the tile smooths
+# the transition; the tone-lock below removes the step itself.
+_UPSCALE_TILE_OVERLAP_PX = 256
 _QUICK_REFINE_TILE_THRESHOLD_MP = 1.6
 
 # 2× Restore Upscale is TWO-STAGE: restoration is a GLOBAL judgement
@@ -963,6 +968,8 @@ def _tiled_restore_pass(
     ov_sigmas=None,
     tile_ref: float = _QUICK_REFINE_REF,
     tile_denoise: float = _QUICK_REFINE_DENOISE,
+    overlap_px: int = _TILE_OVERLAP_PX,
+    tone_lock: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
     """The tiled restore engine: the Quick Photo Refine recipe run over
     overlapping ~1MP tiles, so the model never samples a latent bigger
@@ -1006,14 +1013,14 @@ def _tiled_restore_pass(
 
     tile_lx = max(8, _TILE_PX // ppl_x)
     tile_ly = max(8, _TILE_PX // ppl_y)
-    ov_lx = max(1, _TILE_OVERLAP_PX // ppl_x)
-    ov_ly = max(1, _TILE_OVERLAP_PX // ppl_y)
+    ov_lx = max(1, int(overlap_px) // ppl_x)
+    ov_ly = max(1, int(overlap_px) // ppl_y)
     xs = _tile_positions(nlw, tile_lx, tile_lx - ov_lx)
     ys = _tile_positions(nlh, tile_ly, tile_ly - ov_ly)
     n_tiles = len(xs) * len(ys)
     print(f"[Angelo tiled-restore] scale={scale} canvas={new_W}x{new_H} "
           f"grid={len(xs)}x{len(ys)} ({n_tiles} tiles of ~{_TILE_PX}px, "
-          f"overlap {_TILE_OVERLAP_PX}px)")
+          f"overlap {int(overlap_px)}px, tone_lock={tone_lock})")
 
     out = torch.zeros_like(big_pixels)
     wsum = torch.zeros((1, new_H, new_W, 1), dtype=big_pixels.dtype, device=big_pixels.device)
@@ -1063,9 +1070,27 @@ def _tiled_restore_pass(
             tile_px = _vae_decode(vae, refined).to(big_pixels.device, big_pixels.dtype)
 
             py0, px0 = y0 * ppl_y, x0 * ppl_x
+            if tone_lock:
+                # Lock the tile's LOW-FREQUENCY tone to the globally-
+                # consistent base (the single lanczos upscale): keep the
+                # refine's high-frequency detail, take the base's tone.
+                # This removes the tone STEP between tile centres that a
+                # crossfade can't hide — the visible-bands failure on big
+                # canvases where each tile sees only a sliver of scene.
+                # Low-pass = down/up bilinear round trip (cheap + smooth).
+                pth0, ptw0 = tile_px.shape[1], tile_px.shape[2]
+                base_tile = big_pixels[:, py0:py0 + pth0, px0:px0 + ptw0, :]
+                def _lowpass(t):
+                    chw_t = t.movedim(-1, 1)
+                    dw = max(1, ptw0 // 16)
+                    dh = max(1, pth0 // 16)
+                    small = comfy.utils.common_upscale(chw_t, dw, dh, "bilinear", "disabled")
+                    back = comfy.utils.common_upscale(small, ptw0, pth0, "bilinear", "disabled")
+                    return back.movedim(1, -1)
+                tile_px = (tile_px - _lowpass(tile_px) + _lowpass(base_tile)).clamp(0.0, 1.0)
             pth, ptw = tile_px.shape[1], tile_px.shape[2]
-            wy = _ramp(pth, _TILE_OVERLAP_PX, big_pixels.device)
-            wx = _ramp(ptw, _TILE_OVERLAP_PX, big_pixels.device)
+            wy = _ramp(pth, int(overlap_px), big_pixels.device)
+            wx = _ramp(ptw, int(overlap_px), big_pixels.device)
             w = (wy.view(1, -1, 1, 1) * wx.view(1, 1, -1, 1)).to(big_pixels.dtype)
             out[:, py0:py0 + pth, px0:px0 + ptw, :] += tile_px * w
             wsum[:, py0:py0 + pth, px0:px0 + ptw, :] += w
@@ -1186,7 +1211,11 @@ def _face_polish_pass(
                 )
                 px_dirty = True
             else:
-                pad = _FACE_POLISH_CTX_PAD
+                # Context pad proportional to the face — a fixed 64px is
+                # meaningful context for a 300px face and almost none for
+                # an 800px one. A quarter of the bbox edge scales the
+                # surroundings the model sees with the subject.
+                pad = max(_FACE_POLISH_CTX_PAD, round(0.25 * max(x2 - x1, y2 - y1)))
                 crop_mp = max(0.05, ((x2 - x1 + 2 * pad) * (y2 - y1 + 2 * pad)) / 1e6)
                 cur_lat, fresh_px = _refine_with_fine_upscaling(
                     model=model, vae=vae, current=cur_lat,
@@ -2678,6 +2707,7 @@ class AngeloRefine:
                 callback=callback, disable_pbar=disable_pbar,
                 ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
                 tile_ref=_UPSCALE_TILE_REF, tile_denoise=_UPSCALE_TILE_DENOISE,
+                overlap_px=_UPSCALE_TILE_OVERLAP_PX, tone_lock=True,
             )
             # ----- Stage 3: automatic face polish (needs SAM 3) -----
             # Restore mode anchors faces much harder than plain upscale —
