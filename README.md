@@ -44,7 +44,7 @@ Angelo collapses all of it into one node:
 - **Paint** a freeform stroke with mouse-down + drag. Same thing but custom shape.
 - **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed. **Six Prompt Slots** keep your presets one click away.
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
-- **Reference anchoring for photo restoration** — a toggle with a true 0–1 strength dial for how strongly the current image anchors the edit. Load a soft old photo, Reference ON at 0.8, paint over it, Area Prompt "sharp, high-quality photograph", denoise 0.8 — full texture re-render, same person.
+- **Reference anchoring for photo restoration** — a toggle with a true 0–1 strength dial for how strongly the current image anchors the edit. Load a soft old photo, Reference ON, paint over it, Area Prompt "restore the photo", denoise up to 1.0 — full texture re-render, same person.
 - **✨ Quick Photo Refine** — or skip the recipe entirely: one button, fixed magic settings (full canvas, the instruction "restore the photo", denoise 1.0, fully anchored). Load photo, press, done. Mash it with seed-randomize for variations; Undo any pass you don't like.
 
 **Add & extend — put new things in, grow the frame**
@@ -296,19 +296,19 @@ Notes:
 - **Refine mode only.** The Smart modes generate new content, so "restore to base" has no meaning there — the toggle dims.
 - Pair it with **hold `\`** (see Keyboard shortcuts) to flash the original first and see exactly what you'd be bringing back.
 
-## Photo restoration (✨ Quick Photo Refine + the Ref value)
+## Photo restoration (✨ Quick Photo Refine + the Reference dial)
 
 Got a soft, noisy, or low-quality photo? The fastest path is one button:
 
 **✨ Quick Photo Refine** (in the edit row, Refine mode only). A true magic button with its own **fixed recipe**: one press re-renders the **whole image** with the internal instruction *"restore the photo"* at **denoise 1.0**, fully anchored to the current image as a reference (**strength 1.0**) — identity stays, texture re-renders. **No toolbar box affects it** — Denoise, Reference, Area Prompt, toggles: all ignored. Only the **Seed** applies, so leave Seed Ctrl on `randomize` and **mash the button to cycle restoration variations**, using Undo to step back through them (or `\` to compare against the original). Load photo → press → done. (Want different numbers? That's what the manual recipe below is for.)
 
-Want control over the prompt or the region? The manual recipe underneath it is the **Ref** value:
+Want control over the prompt, the strength, or the region (restore just *part* of a photo)? The manual recipe underneath it is the **Reference** dial:
 
 1. **Load Image** (or drag-drop) the photo.
 2. **Reference ON** (right of Xtra-Fine) — a strength box appears beside it; 0.8–1.0 for restoration.
 3. **Paint over the area to restore** — or the whole image with a big Click R.
-4. **Area Prompt**: *"sharp, high-quality photograph"* (slot it for reuse).
-5. **Denoise 0.7–0.9.** Queue.
+4. **Area Prompt**: *"restore the photo"* (slot it for reuse). **Phrase it as an instruction** — edit models are instruction-trained, and in testing the plain instruction beat every descriptive variant ("sharp, high-quality photograph"-style prompts and keep-the-colours constraints all lost to it).
+5. **Denoise 0.7–1.0.** Queue.
 
 Why Reference matters: in plain Refine, the subject's identity lives entirely in the partially-noised latent — so real enhancement (high denoise) destroys the person along with the noise, and you're stuck nibbling at 0.3. With Reference ON, an edit model (FLUX 2 Klein / Qwen-Image-Edit) anchors identity and content from the **reference image** through its edit branch instead — denoise can run high, the texture gets *fully re-rendered* (which is where the quality actually comes from), and the subject stays the subject. The value is a **true blend**: at every sampling step the anchored prediction and the free prediction are mixed at your ratio — 1.0 holds identity hardest, ~0.5–0.7 trades some anchoring for extra texture freedom. (In-between values evaluate both predictions per step, like CFG does for the negative — slightly slower, and worth it.) Tune to taste per photo.
 
