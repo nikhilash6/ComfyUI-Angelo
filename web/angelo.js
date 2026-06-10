@@ -873,7 +873,7 @@ function attachPreviewCanvas(node) {
         + "repair. Stage 1: the photo is RESTORED globally at native resolution (the model-tuned "
         + "restore instruction, whole-image context — damage gets one consistent interpretation). "
         + "Stage 2: the clean image is upscaled 2× in pixel space and refined tile by tile under a "
-        + "\"high quality image\" prompt — overlapping ~1MP squares, each anchored to its own "
+        + "\"keep the colours, keep the style and restore the image\" prompt — overlapping ~1MP squares, each anchored to its own "
         + "content as a reference, feathered seams.\n\n"
         + "Review overlay before anything commits — Accept = NEW session base (history resets, like "
         + "Outpaint). After accepting: Xtra-Fine for spot edits; ✨ auto-tiles on big canvases.\n\n"
@@ -889,8 +889,8 @@ function attachPreviewCanvas(node) {
     const upscalePlainBtn = makeActionButton("⬆ 2× Upscale", () => triggerRestoreUpscale(node, "plain"), "quickfix");
     upscalePlainBtn.title = "2× Upscale — the same tiled, reference-anchored upscale WITHOUT the "
         + "restoration pre-pass. For images that are already clean (fresh generations, good "
-        + "photos) and just need size + crispness: 2× pixel upscale, then a \"high quality "
-        + "image\" pass per ~1MP tile with feathered seams. Same review-before-commit flow as "
+        + "photos) and just need size + crispness: 2× pixel upscale, then a keep-colours/style "
+        + "restore pass per tile with feathered seams. Same review-before-commit flow as "
         + "2× Restore, including the automatic FACE POLISH finishing stage (faces 250px–1MP get a "
         + "circular refine; needs the optional SAM 3 install, skipped silently without it). "
         + "Edit models + CLIP; Refine mode only.";

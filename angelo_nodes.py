@@ -867,7 +867,7 @@ _QUICK_REFINE_TILE_THRESHOLD_MP = 1.6
 # stage 2 then upscales the clean image and the tiles do the only job
 # tiles are good at — rendering known-good content crisply at the new
 # resolution — under this enhancement prompt (both model families).
-_UPSCALE_TILE_PROMPT = "high quality image"
+_UPSCALE_TILE_PROMPT = "keep the colours, keep the style and restore the image."
 # The upscalers say "image", not "photo" — they serve generations as much
 # as photographs (✨ Quick Photo Refine keeps its photo-specific wording).
 _UPSCALE_RESTORE_PROMPT = "restore the image"
@@ -879,7 +879,7 @@ _UPSCALE_RESTORE_PROMPT_QWEN = ("lightly restore this old image, remove dust and
 # positive evals per tile step). Restore passes keep the full 1.0/1.0
 # recipe — these numbers are for adding crispness, not repairing.
 _UPSCALE_TILE_REF = 1.0
-_UPSCALE_TILE_DENOISE = 0.85
+_UPSCALE_TILE_DENOISE = 1.0
 
 # Face polish: the automatic finishing stage of both upscale buttons.
 # SAM 3 (the optional Detect dependency) finds faces in the upscaled
