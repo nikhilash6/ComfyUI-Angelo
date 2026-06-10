@@ -45,7 +45,7 @@ Angelo collapses all of it into one node:
 - **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed. **Six Prompt Slots** keep your presets one click away.
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
 - **Reference anchoring for photo restoration** — a toggle with a true 0–1 strength dial for how strongly the current image anchors the edit. Load a soft old photo, Reference ON at 0.8, paint over it, Area Prompt "sharp, high-quality photograph", denoise 0.8 — full texture re-render, same person.
-- **✨ Quick Photo Refine** — or skip the recipe entirely: one button, fixed magic settings (full canvas, restoration prompt, denoise 0.75, reference 0.9). Load photo, press, done. Mash it with seed-randomize for variations; Undo any pass you don't like.
+- **✨ Quick Photo Refine** — or skip the recipe entirely: one button, fixed magic settings (full canvas, the instruction "restore the photo", denoise 1.0, fully anchored). Load photo, press, done. Mash it with seed-randomize for variations; Undo any pass you don't like.
 
 **Add & extend — put new things in, grow the frame**
 
@@ -208,7 +208,7 @@ The Overrides node also carries **`disable_live_preview`** — flip this ON if C
 | **⟲ / ⟳** (Undo / Redo) | Pop the most recent refine off the history stack (up to 10 deep) / re-apply the one Undo removed. A new edit clears the redo history. Button-only (no Ctrl-Z/Y — those clash with ComfyUI's graph undo) |
 | **Re-roll** | Redo the most recent edit with a fresh seed on the **same mask + same starting image**, replacing the last attempt — cycle seeds on one edit without reset → re-mask → rerun. Works for click / paint / rectangle / detected masks |
 | **Vary ×4** | Re-roll's big sibling: generate **four** variations of the most recent edit at once (same mask, same starting image, four seeds), then click your favourite in a 2×2 chooser overlay. The pick replaces the last attempt; ✕ / Esc keeps the current result — nothing commits until you choose |
-| **✨ Quick Photo Refine** | One-click photo restoration with a **fixed recipe**: whole image, internal restoration prompt, denoise 0.75, reference anchor 0.9 — identity stays, texture re-renders. Ignores every toolbar box except **Seed**. Edit models + CLIP; Refine mode only. See "Photo restoration" |
+| **✨ Quick Photo Refine** | One-click photo restoration with a **fixed recipe**: whole image, the instruction "restore the photo", denoise 1.0, reference anchor 1.0 — identity stays, texture re-renders. Ignores every toolbar box except **Seed**. Edit models + CLIP; Refine mode only. See "Photo restoration" |
 | **Persistent Mask** | Hold the last mask, then hit Queue repeatedly to keep refining that region on the **latest** result — each press builds further, so you can gradually morph it (pair with `Ctrl=randomize`). For variations on the *original* image instead, use **Re-roll**. Locked OFF in Smart Guided Inpaint (no mask) |
 | **Area Prompt** | Refine with the Area Prompt text typed in the box above the canvas (encoded with the connected `CLIP`) instead of the main prompt. Requires a `CLIP` input + non-empty text. The box only appears when this is ON. Forced ON in both Smart modes |
 | **Paint Mode** | Hold + drag to paint a freeform stroke as the mask, instead of single-circle clicks (Refine only) |
@@ -300,7 +300,7 @@ Notes:
 
 Got a soft, noisy, or low-quality photo? The fastest path is one button:
 
-**✨ Quick Photo Refine** (in the edit row, Refine mode only). A true magic button with its own **fixed recipe**: one press re-renders the **whole image** with an internal restoration prompt (*"high quality photo. do not change colouring, do not change lighting."*) at **denoise 0.75** with the current image anchored as a reference at **strength 0.9** — identity stays, texture re-renders. **No toolbar box affects it** — Denoise, Reference, Area Prompt, toggles: all ignored. Only the **Seed** applies, so leave Seed Ctrl on `randomize` and **mash the button to cycle restoration variations**, using Undo to step back through them (or `\` to compare against the original). Load photo → press → done. (Want different numbers? That's what the manual recipe below is for.)
+**✨ Quick Photo Refine** (in the edit row, Refine mode only). A true magic button with its own **fixed recipe**: one press re-renders the **whole image** with the internal instruction *"restore the photo"* at **denoise 1.0**, fully anchored to the current image as a reference (**strength 1.0**) — identity stays, texture re-renders. **No toolbar box affects it** — Denoise, Reference, Area Prompt, toggles: all ignored. Only the **Seed** applies, so leave Seed Ctrl on `randomize` and **mash the button to cycle restoration variations**, using Undo to step back through them (or `\` to compare against the original). Load photo → press → done. (Want different numbers? That's what the manual recipe below is for.)
 
 Want control over the prompt or the region? The manual recipe underneath it is the **Ref** value:
 

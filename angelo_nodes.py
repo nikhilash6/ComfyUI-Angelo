@@ -826,12 +826,14 @@ def _refine_with_fine_upscaling(
 # box. The whole canvas is re-rendered with this prompt, anchored to the
 # current image via reference_latents — identity from the reference,
 # texture from the re-render. Tested values; tuned here in ONE place.
-# The short colour/lighting constraint earned its spot empirically at
-# THESE denoise/ref settings (a wordier version failed earlier at
-# different settings — phrasing and operating point interact).
-_QUICK_REFINE_PROMPT = "high quality photo. do not change colouring, do not change lighting."
-_QUICK_REFINE_DENOISE = 0.75
-_QUICK_REFINE_REF = 0.9
+# The winning prompt is an INSTRUCTION ("restore the photo") — edit
+# models are instruction-trained, so speaking their vocabulary beat
+# every descriptive/constraint phrasing tried ("high quality photo",
+# keep-the-colours variants — see git history). At ref 1.0 the blend
+# collapses to a single cond, so this recipe also costs nothing extra.
+_QUICK_REFINE_PROMPT = "restore the photo"
+_QUICK_REFINE_DENOISE = 1.0
+_QUICK_REFINE_REF = 1.0
 
 
 def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
