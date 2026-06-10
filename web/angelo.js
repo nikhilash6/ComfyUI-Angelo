@@ -848,14 +848,17 @@ function attachPreviewCanvas(node) {
     node._AngeloOutpaintOverlapInput = opOverlapInput;
 
     const opHint = document.createElement("span");
-    opHint.textContent = "click near an edge = extend · drag the interior = protect";
+    opHint.textContent = "edge-click = extend · drag = protect · Shift = protect anywhere";
     opHint.style.cssText = "font-size:10px; color:#8aa; padding:0 4px; white-space:nowrap;";
-    opHint.title = "Two canvas gestures in Outpaint mode:\n"
+    opHint.title = "Canvas gestures in Outpaint mode:\n"
         + "• Click near an edge — extend the canvas that way (a glowing band previews it).\n"
         + "• Drag in the interior — paint a PROTECT region (red). Protected pixels are "
         + "excluded from the Overlap band, so something near the frame edge (a car, a face) "
         + "stays exactly as-is while the rest of the seam still blends generously. "
-        + "Brush size = Click R.";
+        + "Brush size = Click R.\n"
+        + "• Hold SHIFT — the protect brush wins everywhere, including the edge zone, so "
+        + "you can start a stroke on something flush against the frame edge without "
+        + "triggering an extension.";
     outpaintRow.appendChild(opHint);
 
     const opClearProtectBtn = document.createElement("button");
@@ -1646,7 +1649,10 @@ function attachPreviewCanvas(node) {
                 redrawCanvasWithOverlays(node);
                 return;
             }
-            const dir = _outpaintEdgeDir(node, p);
+            // Shift forces the protect brush everywhere — suppresses the
+            // edge zone so strokes can START on something flush against
+            // the frame edge (same convention as Detect's Shift brush).
+            const dir = event.shiftKey ? null : _outpaintEdgeDir(node, p);
             if (dir !== node._AngeloOutpaintHoverDir) {
                 node._AngeloOutpaintHoverDir = dir;
             }
@@ -1752,7 +1758,9 @@ function attachPreviewCanvas(node) {
         // in the interior, a drag paints the PROTECT brush (areas the
         // overlap band must leave frozen).
         if (isOutpaintMode(node)) {
-            if (node._AngeloOutpaintHoverDir) return;  // edge-click = extend
+            // Shift = protect brush wins even in the edge zone.
+            if (node._AngeloOutpaintHoverDir && !event.shiftKey) return;  // edge-click = extend
+            node._AngeloOutpaintHoverDir = null;
             const pp = eventToImagePixel(event);
             if (!pp) return;
             try {
@@ -1900,8 +1908,9 @@ function attachPreviewCanvas(node) {
             return;
         }
         // Outpaint mode: a click near an edge extends the canvas that way.
+        // Shift-clicks belong to the protect brush, never the extension.
         if (isOutpaintMode(node)) {
-            if (node._AngeloOutpaintHoverDir) {
+            if (node._AngeloOutpaintHoverDir && !event.shiftKey) {
                 triggerOutpaint(node, node._AngeloOutpaintHoverDir);
             }
             return;
