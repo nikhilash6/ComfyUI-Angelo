@@ -842,6 +842,16 @@ _QUICK_REFINE_PROMPT_QWEN = ("lightly restore this old photo, remove dust and sc
 _QUICK_REFINE_DENOISE = 1.0
 _QUICK_REFINE_REF = 1.0
 
+# Tiled restore engine (2× Restore Upscale + big-canvas Quick Refine).
+# Working tile size + overlap in PIXELS: tiles are sampled at ~1MP no
+# matter how large the canvas is, so the latent fed to the model never
+# outgrows the resolution it renders well at. Quick Photo Refine
+# auto-routes through the tiled engine above the MP threshold for the
+# same reason.
+_TILE_PX = 1024
+_TILE_OVERLAP_PX = 128
+_QUICK_REFINE_TILE_THRESHOLD_MP = 1.6
+
 
 def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
     """Attach ref_latent as reference_latents at a TRUE fractional strength
@@ -875,6 +885,137 @@ def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
     head = node_helpers.conditioning_set_values(with_ref, {"strength": s})
     tail = node_helpers.conditioning_set_values(positive, {"strength": 1.0 - s})
     return head + tail
+
+
+def _tile_positions(total: int, tile: int, stride: int) -> list[int]:
+    """Start offsets covering [0, total) with `tile`-sized windows at
+    `stride` spacing, the last window pulled flush to the end so the far
+    edge is always covered exactly once (no sliver tiles)."""
+    if total <= tile:
+        return [0]
+    pos = list(range(0, total - tile + 1, stride))
+    if pos[-1] + tile < total:
+        pos.append(total - tile)
+    return pos
+
+
+def _tiled_restore_pass(
+    *,
+    model,
+    vae,
+    current: torch.Tensor,
+    current_pixels: torch.Tensor | None,
+    scale: float,
+    positive_base,
+    negative,
+    seed: int,
+    steps: int,
+    cfg: float,
+    sampler_name: str,
+    scheduler: str,
+    callback,
+    disable_pbar: bool,
+    ov_guider=None,
+    ov_sampler=None,
+    ov_sigmas=None,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """The tiled restore engine: the Quick Photo Refine recipe run over
+    overlapping ~1MP tiles, so the model never samples a latent bigger
+    than its happy place — regardless of canvas size.
+
+    scale=2.0 → 2× Restore Upscale: decode, lanczos-upscale the PIXELS
+    (latent upscaling smears; pixel space is the Xtra-Fine lesson),
+    re-encode, then restore tile by tile. scale=1.0 → in-place tiled
+    restore (how Quick Photo Refine handles big canvases).
+
+    Each tile is sampled at denoise 1.0 anchored to ITS OWN pre-refine
+    latent via reference_latents. The anchor is what makes tiled
+    full-denoise viable: tiles can't hallucinate new content (the
+    classic tiled-upscaler failure), and adjacent tiles agree because
+    they're anchored to the same underlying image — the reference does
+    the job tile-ControlNets do in other pipelines.
+
+    Tiles composite in pixel space under a separable ramp weight
+    (linear fade over the overlap), normalised by the accumulated
+    weight, so seams blend and un-overlapped edges keep weight 1.
+
+    Returns (final_latent, final_pixels, n_tiles).
+    """
+    pixels = current_pixels if current_pixels is not None else _vae_decode(vae, current)
+    B, H, W, C = pixels.shape
+
+    if scale != 1.0:
+        new_W = max(16, int(round(W * scale / 16.0)) * 16)
+        new_H = max(16, int(round(H * scale / 16.0)) * 16)
+        chw = pixels.movedim(-1, 1)
+        chw = comfy.utils.common_upscale(chw, new_W, new_H, "lanczos", "disabled")
+        big_pixels = chw.movedim(1, -1).contiguous()
+    else:
+        big_pixels = pixels
+    new_H, new_W = big_pixels.shape[1], big_pixels.shape[2]
+
+    big_latent = _vae_encode(vae, big_pixels)
+    nlh, nlw = big_latent.shape[-2], big_latent.shape[-1]
+    ppl_x = max(1, round(new_W / nlw))
+    ppl_y = max(1, round(new_H / nlh))
+
+    tile_lx = max(8, _TILE_PX // ppl_x)
+    tile_ly = max(8, _TILE_PX // ppl_y)
+    ov_lx = max(1, _TILE_OVERLAP_PX // ppl_x)
+    ov_ly = max(1, _TILE_OVERLAP_PX // ppl_y)
+    xs = _tile_positions(nlw, tile_lx, tile_lx - ov_lx)
+    ys = _tile_positions(nlh, tile_ly, tile_ly - ov_ly)
+    n_tiles = len(xs) * len(ys)
+    print(f"[Angelo tiled-restore] scale={scale} canvas={new_W}x{new_H} "
+          f"grid={len(xs)}x{len(ys)} ({n_tiles} tiles of ~{_TILE_PX}px, "
+          f"overlap {_TILE_OVERLAP_PX}px)")
+
+    out = torch.zeros_like(big_pixels)
+    wsum = torch.zeros((1, new_H, new_W, 1), dtype=big_pixels.dtype, device=big_pixels.device)
+
+    def _ramp(length_px: int, ov_px: int, device):
+        r = torch.ones(length_px, dtype=torch.float32, device=device)
+        n = min(ov_px, length_px)
+        fade = (torch.arange(n, dtype=torch.float32, device=device) + 1.0) / (n + 1.0)
+        r[:n] = torch.minimum(r[:n], fade)
+        r[-n:] = torch.minimum(r[-n:], fade.flip(0))
+        return r
+
+    idx = 0
+    for y0 in ys:
+        for x0 in xs:
+            tw = min(tile_lx, nlw - x0)
+            th = min(tile_ly, nlh - y0)
+            tile_lat = big_latent[..., y0:y0 + th, x0:x0 + tw].clone().contiguous()
+            tile_pos = _apply_reference(positive_base, tile_lat.clone(), _QUICK_REFINE_REF)
+            tile_seed = (seed + idx * 1000003) & 0xFFFFFFFFFFFFFFFF
+            noise = comfy.sample.prepare_noise(tile_lat, tile_seed, None)
+            refined = _do_sample(
+                guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
+                model=model, noise=noise,
+                steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                positive=tile_pos, negative=negative,
+                source_latent=tile_lat,
+                denoise=_QUICK_REFINE_DENOISE,
+                noise_mask=None,
+                callback=callback,
+                disable_pbar=disable_pbar,
+                seed=tile_seed,
+            )
+            tile_px = _vae_decode(vae, refined).to(big_pixels.device, big_pixels.dtype)
+
+            py0, px0 = y0 * ppl_y, x0 * ppl_x
+            pth, ptw = tile_px.shape[1], tile_px.shape[2]
+            wy = _ramp(pth, _TILE_OVERLAP_PX, big_pixels.device)
+            wx = _ramp(ptw, _TILE_OVERLAP_PX, big_pixels.device)
+            w = (wy.view(1, -1, 1, 1) * wx.view(1, 1, -1, 1)).to(big_pixels.dtype)
+            out[:, py0:py0 + pth, px0:px0 + ptw, :] += tile_px * w
+            wsum[:, py0:py0 + pth, px0:px0 + ptw, :] += w
+            idx += 1
+
+    final_pixels = out / wsum.clamp(min=1e-6)
+    final_latent = _vae_encode(vae, final_pixels)
+    return final_latent, final_pixels, n_tiles
 
 
 # Direction-aware instruction prepended to the outpaint conditioning when a
@@ -1553,6 +1694,14 @@ class AngeloRefine:
                                                             "anchored and free predictions. 0 = "
                                                             "off, 1 = fully anchored. Set via the "
                                                             "Ref box on the toolbar."}),
+
+                # 2× Restore Upscale: the ⬆ button bumps this. Pixel-space
+                # 2× lanczos + re-encode, then the tiled restore engine
+                # (_tiled_restore_pass) over overlapping ~1MP tiles. Result
+                # is STASHED for review (reuses the outpaint pending-base
+                # flow — Accept installs it as a fresh session base, since
+                # the dimensions changed). Declared LAST.
+                "upscale_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1660,6 +1809,7 @@ class AngeloRefine:
         refine_reference=False,
         quick_refine_seq=0,
         reference_strength=0.0,
+        upscale_seq=0,
         latent=None,
         clip=None,
         overrides=None,
@@ -1850,6 +2000,7 @@ class AngeloRefine:
                 "outpaint_seq": outpaint_seq,
                 "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
+                "upscale_seq": upscale_seq,
                 "fingerprint": incoming_fp,
                 "sampler_seed_at_run": int(sampler_seed),
                 "loaded_seq": loaded_seq,
@@ -1927,6 +2078,7 @@ class AngeloRefine:
                 "outpaint_seq": outpaint_seq,
                 "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
+                "upscale_seq": upscale_seq,
                 "fingerprint": incoming_fp,
                 "loaded_seq": loaded_seq,
                 # Source image (#3/#9): capture the base once, independent of
@@ -2022,6 +2174,7 @@ class AngeloRefine:
                     "outpaint_seq": outpaint_seq,
                     "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
+                "upscale_seq": upscale_seq,
                     # Preserve the wired-latent fingerprint + load marker so
                     # the next run doesn't read the unchanged upstream as a
                     # fresh latent and blow away the canvas we just committed.
@@ -2185,36 +2338,54 @@ class AngeloRefine:
                          else _QUICK_REFINE_PROMPT)
             if clip is not None:
                 tokens_q = clip.tokenize(qr_prompt)
-                qr_positive = clip.encode_from_tokens_scheduled(tokens_q)
+                qr_base = clip.encode_from_tokens_scheduled(tokens_q)
             else:
                 # No CLIP → can't encode the restoration prompt; the main
                 # positive flows through. Still works, just less targeted.
-                qr_positive = positive
-            # Whole-image reference — IDENTICAL construction to the manual
-            # path (whole canvas painted), at the button's own fixed
-            # strength. Magic button: NO toolbar box affects it (only the
-            # seed, for variation mashing).
-            qr_strength = _QUICK_REFINE_REF
-            qr_positive = _apply_reference(qr_positive, current.clone(), qr_strength)
+                qr_base = positive
             qr_seed = int(seed)
             callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
-            print(f"[Angelo quick-refine] whole-canvas restoration pass, "
-                  f"denoise={_QUICK_REFINE_DENOISE}, ref={qr_strength}, seed={qr_seed}")
-            noise = comfy.sample.prepare_noise(current, qr_seed, None)
-            qr_refined = _do_sample(
-                guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
-                model=model, noise=noise,
-                steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
-                positive=qr_positive, negative=negative,
-                source_latent=current,
-                denoise=_QUICK_REFINE_DENOISE,
-                noise_mask=None,   # whole canvas — no mask
-                callback=callback,
-                disable_pbar=disable_pbar,
-                seed=qr_seed,
-            )
-            state["history"].append((qr_refined, None))
+            # Big canvases (e.g. after a 2× Restore Upscale) auto-route
+            # through the tiled engine — same recipe per ~1MP tile, each
+            # anchored to its own content, seams feathered — so the model
+            # never samples a latent beyond the size it renders well at.
+            canvas_mp = (image_w * image_h) / 1e6 if (image_w > 0 and image_h > 0) else 0.0
+            if canvas_mp > _QUICK_REFINE_TILE_THRESHOLD_MP:
+                print(f"[Angelo quick-refine] {canvas_mp:.1f}MP canvas — tiled restore pass")
+                qr_refined, qr_pixels, _n = _tiled_restore_pass(
+                    model=model, vae=vae,
+                    current=current, current_pixels=current_pixels,
+                    scale=1.0,
+                    positive_base=qr_base, negative=negative,
+                    seed=qr_seed, steps=steps, cfg=cfg,
+                    sampler_name=sampler_name, scheduler=scheduler,
+                    callback=callback, disable_pbar=disable_pbar,
+                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                )
+            else:
+                # Whole-image reference — IDENTICAL construction to the
+                # manual path (whole canvas painted), at the button's own
+                # fixed strength. Magic button: NO toolbar box affects it
+                # (only the seed, for variation mashing).
+                qr_positive = _apply_reference(qr_base, current.clone(), _QUICK_REFINE_REF)
+                print(f"[Angelo quick-refine] whole-canvas restoration pass, "
+                      f"denoise={_QUICK_REFINE_DENOISE}, ref={_QUICK_REFINE_REF}, seed={qr_seed}")
+                noise = comfy.sample.prepare_noise(current, qr_seed, None)
+                qr_refined = _do_sample(
+                    guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
+                    model=model, noise=noise,
+                    steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                    positive=qr_positive, negative=negative,
+                    source_latent=current,
+                    denoise=_QUICK_REFINE_DENOISE,
+                    noise_mask=None,   # whole canvas — no mask
+                    callback=callback,
+                    disable_pbar=disable_pbar,
+                    seed=qr_seed,
+                )
+                qr_pixels = None
+            state["history"].append((qr_refined, qr_pixels))
             if len(state["history"]) > _HISTORY_CAP:
                 state["history"] = state["history"][-_HISTORY_CAP:]
             state["redo_stack"] = []
@@ -2223,7 +2394,46 @@ class AngeloRefine:
             state["click_seq"] = click_seq
             state["refine_seed_at_run"] = qr_seed
             current = qr_refined
-            current_pixels = None
+            current_pixels = qr_pixels
+
+        # ===== 2× Restore Upscale: tiled, reference-anchored upscaling =====
+        # Pixel 2× + re-encode, then the tiled restore engine. The result
+        # changes the canvas DIMENSIONS, so it goes through the same
+        # review/accept flow as Outpaint: stash + overlay, Accept installs
+        # it as a fresh session base (history resets), Cancel costs nothing.
+        new_upscale = (
+            inpainting_mode == "Refine"
+            and upscale_seq > 0
+            and upscale_seq != state.get("upscale_seq", -1)
+        )
+        state["upscale_seq"] = upscale_seq
+        if new_upscale:
+            up_prompt = (_QUICK_REFINE_PROMPT_QWEN if current.dim() == 5
+                         else _QUICK_REFINE_PROMPT)
+            if clip is not None:
+                tokens_u = clip.tokenize(up_prompt)
+                up_base = clip.encode_from_tokens_scheduled(tokens_u)
+            else:
+                up_base = positive
+            up_seed = int(seed)
+            callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
+            disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+            up_latent, up_pixels, _n = _tiled_restore_pass(
+                model=model, vae=vae,
+                current=current, current_pixels=current_pixels,
+                scale=2.0,
+                positive_base=up_base, negative=negative,
+                seed=up_seed, steps=steps, cfg=cfg,
+                sampler_name=sampler_name, scheduler=scheduler,
+                callback=callback, disable_pbar=disable_pbar,
+                ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+            )
+            previewer = comfy_nodes.PreviewImage()
+            ui_up = previewer.save_images(up_pixels, filename_prefix="Angelo_upscale")
+            state["outpaint_pending"] = (up_latent, up_pixels)
+            state["outpaint_preview_refs"] = ui_up["ui"]["images"]
+            state["click_seq"] = click_seq
+            state["refine_seed_at_run"] = up_seed
 
         # Has the user clicked since our last execution for this node?
         # Never treat a queue-hook click_seq bump as an edit in Outpaint

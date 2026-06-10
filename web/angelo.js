@@ -604,6 +604,21 @@ function attachPreviewCanvas(node) {
     row1.appendChild(quickFixBtn);
     node._AngeloQuickFixBtn = quickFixBtn;
 
+    const upscaleBtn = makeActionButton("⬆ 2× Restore", () => triggerRestoreUpscale(node), "quickfix");
+    upscaleBtn.title = "2× Restore Upscale — creative upscaling built from the restoration recipe. "
+        + "The image is upscaled 2× in pixel space (lanczos), re-encoded, then restored tile by "
+        + "tile: overlapping ~1MP squares, each at denoise 1.0 anchored to its own content as a "
+        + "reference, composited with feathered seams. The anchor is what stops tiles "
+        + "hallucinating new content and keeps neighbours agreeing — the job tile-ControlNets do "
+        + "in other pipelines.\n\n"
+        + "The result is shown in a review overlay first — Accept commits it as a NEW session "
+        + "base (history resets, like Outpaint), Try again re-rolls it, Cancel costs nothing. "
+        + "After accepting: use Xtra-Fine for spot edits (it crops, so it stays fast at any "
+        + "canvas size), and ✨ Quick Photo Refine auto-tiles on big canvases.\n\n"
+        + "Edit models + CLIP; Refine mode only. A 1MP source ≈ 9 tiles ≈ 15–20s on Klein.";
+    row1.appendChild(upscaleBtn);
+    node._AngeloUpscaleBtn = upscaleBtn;
+
     row1.appendChild(makeSeparator());
 
     const persistentMaskToggle = makeToggleButton("Persistent Mask", () => {
@@ -1458,6 +1473,7 @@ function attachPreviewCanvas(node) {
     opEsc.style.cssText = "font-weight:normal; font-size:10px; color:#8aa;";
     opHeader.appendChild(opTitle);
     opHeader.appendChild(opEsc);
+    node._AngeloOutpaintTitle = opTitle;
     const opImgWrap = document.createElement("div");
     opImgWrap.style.cssText = "flex:1 1 auto; min-height:0; display:flex; "
         + "align-items:center; justify-content:center;";
@@ -3987,6 +4003,25 @@ function triggerQuickPhotoRefine(node) {
     queuePrompt();
 }
 
+// 2× Restore Upscale: tiled, reference-anchored creative upscaling. The
+// result is a dimension change, so it rides the same review/accept
+// (pending-base) flow as Outpaint — _AngeloPendingOp tells the shared
+// overlay which op "Try again" should re-fire.
+function triggerRestoreUpscale(node) {
+    if (isAnySmartMode(node) || isOutpaintMode(node)) return;  // dimmed there anyway
+    if (!node._AngeloImg) {
+        _angeloToast("Generate or load an image first");
+        return;
+    }
+    const ws = findWidget(node, "upscale_seq");
+    if (!ws) return;
+    node._AngeloPendingOp = "upscale";
+    setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
+    _angeloToast("⬆ 2× Restore Upscale — restoring tile by tile…");
+    dbg("queue restore upscale", { upscale_seq: ws.value });
+    queuePrompt();
+}
+
 // ===== Outpaint — directional canvas extension with review-before-commit =====
 
 function isOutpaintMode(node) {
@@ -4005,6 +4040,7 @@ function triggerOutpaint(node, dir) {
         return;
     }
     setWidget(wd, dir);
+    node._AngeloPendingOp = "outpaint";
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
     // The direction just changed — refresh the combined-prompt preview.
     syncOutpaintPromptPreview(node);
@@ -4028,6 +4064,13 @@ function showOutpaintReview(node, ref) {
     const ov = node._AngeloOutpaintOverlay;
     const img = node._AngeloOutpaintImg;
     if (!ov || !img) return;
+    // Title follows the pending op — the overlay is shared between
+    // Outpaint and 2× Restore Upscale.
+    if (node._AngeloOutpaintTitle) {
+        node._AngeloOutpaintTitle.textContent = node._AngeloPendingOp === "upscale"
+            ? "2× Restore Upscale — keep it?"
+            : "Outpaint preview — keep it?";
+    }
     img.src = makeViewUrl(ref);
     ov.style.display = "flex";
 }
@@ -4049,15 +4092,19 @@ function triggerOutpaintAccept(node) {
     const wpr = findWidget(node, "outpaint_protect");
     if (wpr) setWidget(wpr, "");
     syncOutpaintControls(node);
-    _angeloToast("Committing the new canvas — this is your new base");
+    _angeloToast(node._AngeloPendingOp === "upscale"
+        ? "Committing the 2× canvas — use Xtra-Fine for spot edits at this size"
+        : "Committing the new canvas — this is your new base");
     dbg("queue outpaint accept", { outpaint_accept_seq: ws.value });
     queuePrompt();
 }
 
-// Same direction + amount, fresh seed. The stale stash is simply
-// overwritten by the new run.
+// Same operation, fresh seed. The stale stash is simply overwritten by
+// the new run. Dispatches on the pending op — the review overlay is
+// shared between Outpaint and 2× Restore Upscale.
 function triggerOutpaintRetry(node) {
-    const ws = findWidget(node, "outpaint_seq");
+    const seqName = node._AngeloPendingOp === "upscale" ? "upscale_seq" : "outpaint_seq";
+    const ws = findWidget(node, seqName);
     if (!ws) return;
     const wseed = findWidget(node, "seed");
     if (wseed) {
@@ -4065,7 +4112,9 @@ function triggerOutpaintRetry(node) {
         syncSeedInput(node);
     }
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    _angeloToast("Trying the extension again with a fresh seed…");
+    _angeloToast(node._AngeloPendingOp === "upscale"
+        ? "Re-rolling the 2× restore with a fresh seed…"
+        : "Trying the extension again with a fresh seed…");
     queuePrompt();
 }
 
@@ -4440,7 +4489,7 @@ function syncSmartInpaintLockedWidgets(node) {
     _dimControls(node, ["_AngeloRerollBtn", "_AngeloVaryBtn"], outp);
 
     // Quick Photo Refine is a Refine-mode action.
-    _dimControls(node, ["_AngeloQuickFixBtn"], anySmart || outp);
+    _dimControls(node, ["_AngeloQuickFixBtn", "_AngeloUpscaleBtn"], anySmart || outp);
 
     // Outpaint row visibility + input mirrors.
     syncOutpaintControls(node);
@@ -4860,6 +4909,8 @@ function hideMechanicalWidgets(node) {
         "refine_reference", "reference_strength",
         // Quick Photo Refine — driven by the ✨ button
         "quick_refine_seq",
+        // 2× Restore Upscale — driven by the ⬆ button
+        "upscale_seq",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
