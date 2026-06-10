@@ -853,8 +853,8 @@ _QUICK_REFINE_REF = 1.0
 _LIR_PROMPT = "restore the image. make it clear and sharp."
 _LIR_REF = 0.4
 _LIR_DENOISE = 0.55
-_LIR_CTX_PAD = 176
-_LIR_BOX_MP = 1.0   # target box area — the tweakable knob
+_LIR_CTX_PAD = 128
+_LIR_BOX_MP = 1.3   # target box area — the tweakable knob
 
 # Tiled restore engine (2× Restore Upscale + big-canvas Quick Refine).
 # Working tile size + overlap in PIXELS: tiles are sampled at ~1MP no
