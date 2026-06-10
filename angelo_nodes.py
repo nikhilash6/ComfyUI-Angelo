@@ -848,7 +848,7 @@ _QUICK_REFINE_REF = 1.0
 # outgrows the resolution it renders well at. Quick Photo Refine
 # auto-routes through the tiled engine above the MP threshold for the
 # same reason.
-_TILE_PX = 1024
+_TILE_PX = 1400
 _TILE_OVERLAP_PX = 128
 
 
