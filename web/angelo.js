@@ -891,6 +891,32 @@ function attachPreviewCanvas(node) {
     quickRow.appendChild(lirBtn);
     node._AngeloLirBtn = lirBtn;
 
+    // TEMP — Large Image Refine tuning knobs. Remove once the recipe is
+    // settled (fold the winners into the _LIR_* constants in Python).
+    const lirRefInput = makeNumberInput("R", { min: 0, max: 1, step: 0.05, width: 44 }, (val) => {
+        const w = findWidget(node, "lir_ref");
+        if (w) setWidget(w, val);
+    });
+    lirRefInput.title = "TEMP tuning: Large Image Refine reference strength (per box).";
+    quickRow.appendChild(lirRefInput);
+    node._AngeloLirRefInput = lirRefInput;
+
+    const lirPadInput = makeNumberInput("Pad", { min: 0, max: 512, step: 8, width: 48 }, (val) => {
+        const w = findWidget(node, "lir_ctx_pad");
+        if (w) setWidget(w, Math.round(val));
+    });
+    lirPadInput.title = "TEMP tuning: Large Image Refine context pad in px (per box) — separate from Xtra-Fine's Ctx Pad.";
+    quickRow.appendChild(lirPadInput);
+    node._AngeloLirPadInput = lirPadInput;
+
+    const lirDenInput = makeNumberInput("Dn", { min: 0.05, max: 1, step: 0.05, width: 44 }, (val) => {
+        const w = findWidget(node, "lir_denoise");
+        if (w) setWidget(w, val);
+    });
+    lirDenInput.title = "TEMP tuning: Large Image Refine denoise (per box).";
+    quickRow.appendChild(lirDenInput);
+    node._AngeloLirDenInput = lirDenInput;
+
     // ===== OUTPAINT ROW: direction + amount (Outpaint mode only) =====
     // Arrows extend the canvas in that direction; "All" pads every side
     // (zoom-out). The same action is available by clicking near an edge
@@ -4410,6 +4436,13 @@ function syncRestoreToggle(node) {
     _syncToggle(node._AngeloRestoreToggle, effective, _TOGGLE_ON_COLORS.amber);
 }
 
+// TEMP — LIR tuning knob mirrors.
+function syncLirKnobs(node) {
+    _syncNumberInput(node._AngeloLirRefInput, findWidget(node, "lir_ref")?.value);
+    _syncNumberInput(node._AngeloLirPadInput, findWidget(node, "lir_ctx_pad")?.value);
+    _syncNumberInput(node._AngeloLirDenInput, findWidget(node, "lir_denoise")?.value);
+}
+
 function syncReferenceControls(node) {
     // Effective OFF in the Smart modes / Outpaint (their own reference
     // logic) regardless of the stored widget value.
@@ -4769,6 +4802,7 @@ function syncAllToolbarControls(node) {
     syncPaintModeToggle(node);
     syncRestoreToggle(node);
     syncReferenceControls(node);
+    syncLirKnobs(node);
     syncPromptSlotButtons(node);
     syncFineUpscaleToggle(node);
     syncClickRadiusInput(node);
@@ -4933,6 +4967,8 @@ function hideMechanicalWidgets(node) {
         "quick_refine_seq",
         // ⬆ 2× Pixel + ▦ Large Image Refine — driven by their buttons
         "upscale_seq", "lir_seq",
+        // TEMP — LIR tuning knobs (small inputs beside the ▦ button)
+        "lir_ref", "lir_ctx_pad", "lir_denoise",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
