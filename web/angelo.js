@@ -566,14 +566,14 @@ function attachPreviewCanvas(node) {
     undoBtn.style.borderRadius = "3px 0 0 3px";
     undoBtn.style.padding = "3px 9px";
     undoBtn.style.fontSize = "13px";
-    undoBtn.style.lineHeight = "1";
+    undoBtn.style.lineHeight = "15px";
     const redoBtn = makeActionButton("⟳", () => triggerRedo(node), "redo");
     redoBtn.title = "Redo — re-apply the most recent edit that Undo removed. A new edit clears the redo history.";
     redoBtn.style.borderRadius = "0 3px 3px 0";
     redoBtn.style.borderLeft = "none";
     redoBtn.style.padding = "3px 9px";
     redoBtn.style.fontSize = "13px";
-    redoBtn.style.lineHeight = "1";
+    redoBtn.style.lineHeight = "15px";
     undoRedoWrap.appendChild(undoBtn);
     undoRedoWrap.appendChild(redoBtn);
     row1.appendChild(undoRedoWrap);
@@ -4209,6 +4209,9 @@ function makeActionButton(label, onClick, kind = "neutral") {
     btn.style.cursor = "pointer";
     btn.style.padding = "3px 10px";
     btn.style.fontSize = "11px";
+    // Pin the line box so emoji glyphs (✨ ⚡) can't inflate a button's
+    // height relative to its text-only neighbours.
+    btn.style.lineHeight = "15px";
     btn.style.fontWeight = "bold";
     btn.style.border = `1px solid ${th.border}`;
     btn.style.borderRadius = "3px";
@@ -4263,6 +4266,9 @@ function makeToggleButton(label, onToggle) {
     btn.style.cursor = "pointer";
     btn.style.padding = "3px 10px";
     btn.style.fontSize = "11px";
+    // Same pinned line box as makeActionButton — every button in the
+    // row computes the same height.
+    btn.style.lineHeight = "15px";
     btn.style.fontWeight = "bold";
     btn.style.border = "1px solid #555";
     btn.style.borderRadius = "3px";
