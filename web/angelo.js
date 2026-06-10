@@ -2207,6 +2207,8 @@ function attachAreaPromptBox(node, container) {
         // Mirror into the active prompt slot so slots survive switches
         // and workflow saves without a separate "save slot" action.
         _angeloPersistActiveSlot(node);
+        // Keep the Outpaint combined-prompt preview live while typing.
+        syncOutpaintPromptPreview(node);
     });
 
     posNegBtn.addEventListener("click", (event) => {
@@ -2268,9 +2270,50 @@ function attachAreaPromptBox(node, container) {
         triggerGuidedRefine(node);
     });
 
+    // Outpaint prompt review — shown only in Outpaint mode. An order
+    // selector (instruction first vs my text first; some models weight
+    // the head of the prompt more) plus a live read-only preview of the
+    // EXACT combined prompt that will be encoded, so there's no guessing
+    // what the instruction did to your text.
+    const opPromptWrap = document.createElement("div");
+    opPromptWrap.style.cssText = "display:none; flex-direction:column; gap:3px; "
+        + "padding:2px 0 0 0;";
+    const opOrderRow = document.createElement("div");
+    opOrderRow.style.cssText = "display:flex; align-items:center; gap:6px;";
+    const opOrderSelect = makeDropdown("Order", ["Instruction first", "My text first"], (val) => {
+        const w = findWidget(node, "outpaint_instruction_pos");
+        if (w) setWidget(w, val === "My text first" ? "append" : "prepend");
+        syncOutpaintPromptPreview(node);
+    });
+    opOrderSelect.title = "Where Angelo's extend-the-scene instruction sits relative to your text. "
+        + "Instruction first is the default; try 'My text first' if the model is leaning too hard "
+        + "on the instruction and under-weighting your description (some models weight the start "
+        + "of the prompt more heavily). The preview below shows exactly what gets encoded.";
+    opOrderRow.appendChild(opOrderSelect);
+    const opPreviewLabel = document.createElement("span");
+    opPreviewLabel.textContent = "Final prompt:";
+    opPreviewLabel.style.cssText = "font-size:10px; color:#8aa;";
+    opOrderRow.appendChild(opPreviewLabel);
+    const opPromptPreview = document.createElement("div");
+    opPromptPreview.style.cssText = "font-size:10px; font-style:italic; color:#9ab; "
+        + "background:#1a1a1a; border:1px solid #3a3a3a; border-radius:3px; "
+        + "padding:4px 6px; white-space:pre-wrap; word-break:break-word; "
+        + "max-height:64px; overflow-y:auto; user-select:text;";
+    opPromptPreview.title = "The exact prompt the outpaint will encode (direction phrase follows "
+        + "the last-used / next-clicked direction).";
+    for (const ev of ["pointerdown", "mousedown", "wheel"]) {
+        opPromptPreview.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    opPromptWrap.appendChild(opOrderRow);
+    opPromptWrap.appendChild(opPromptPreview);
+    node._AngeloOutpaintPromptWrap = opPromptWrap;
+    node._AngeloOutpaintOrderSelect = opOrderSelect;
+    node._AngeloOutpaintPromptPreview = opPromptPreview;
+
     wrap.appendChild(header);
     wrap.appendChild(locationSelect);
     wrap.appendChild(textarea);
+    wrap.appendChild(opPromptWrap);
     wrap.appendChild(smartBtn);
     wrap.appendChild(runBtn);
     container.appendChild(wrap);
@@ -3659,6 +3702,17 @@ function isAnySmartMode(node) {
     return isSmartInpaintMode(node) || isSmartGuidedInpaintMode(node);
 }
 
+// Outpaint instruction texts — MUST match Python's _OUTPAINT_INSTRUCTIONS
+// exactly (Python owns the encode; this mirror only feeds the live
+// combined-prompt preview under the Area Prompt box).
+const _Angelo_OUTPAINT_INSTRUCTIONS = {
+    left:  "Extend the image to the left, continuing the scene and background naturally. Do not repeat or add new subjects. ",
+    right: "Extend the image to the right, continuing the scene and background naturally. Do not repeat or add new subjects. ",
+    up:    "Extend the image upward, continuing the scene and background naturally. Do not repeat or add new subjects. ",
+    down:  "Extend the image downward, continuing the scene and background naturally. Do not repeat or add new subjects. ",
+    all:   "Extend the image outward on all sides, continuing the scene and background naturally. Do not repeat or add new subjects. ",
+};
+
 // Smart Guided Inpaint location labels — MUST match the Python
 // _GUIDED_LOCATION_PREFIXES keys exactly (Python owns the label→prefix
 // mapping; JS only stores the chosen label).
@@ -3873,6 +3927,8 @@ function triggerOutpaint(node, dir) {
     }
     setWidget(wd, dir);
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
+    // The direction just changed — refresh the combined-prompt preview.
+    syncOutpaintPromptPreview(node);
     // Ship the current protect circles (kept client-side so they survive
     // Try-again retries without re-painting).
     const wpr = findWidget(node, "outpaint_protect");
@@ -3952,6 +4008,40 @@ function _outpaintEdgeDir(node, p) {
     return cands[0][0];
 }
 
+// Live preview of the EXACT combined prompt the next outpaint will encode.
+// Composition MUST stay in lockstep with Python's outpaint conditioning
+// (instruction prepend/append around the trimmed Area text).
+function syncOutpaintPromptPreview(node) {
+    const wrapEl = node._AngeloOutpaintPromptWrap;
+    if (!wrapEl) return;
+    const show = isOutpaintMode(node);
+    const next = show ? "flex" : "none";
+    if (wrapEl.style.display !== next) wrapEl.style.display = next;
+    if (!show) return;
+    // Mirror the order selector from the widget.
+    const posW = findWidget(node, "outpaint_instruction_pos");
+    const pos = (posW && posW.value) === "append" ? "append" : "prepend";
+    const sel = node._AngeloOutpaintOrderSelect;
+    if (sel && sel._AngeloSelect) {
+        const want = pos === "append" ? "My text first" : "Instruction first";
+        if (sel._AngeloSelect.value !== want) sel._AngeloSelect.value = want;
+    }
+    const dirW = findWidget(node, "outpaint_dir");
+    const dir = (dirW && dirW.value) || "right";
+    const instr = _Angelo_OUTPAINT_INSTRUCTIONS[dir] || _Angelo_OUTPAINT_INSTRUCTIONS.right;
+    const apW = findWidget(node, "area_prompt");
+    const txtW = findWidget(node, "area_text_positive");
+    const userTxt = (apW && apW.value) ? String(txtW?.value || "").trim() : "";
+    let combined;
+    if (userTxt && pos === "append") {
+        combined = userTxt.replace(/[ .,]+$/, "") + ". " + instr.trim();
+    } else {
+        combined = instr + userTxt;
+    }
+    const pv = node._AngeloOutpaintPromptPreview;
+    if (pv && pv.textContent !== combined) pv.textContent = combined;
+}
+
 // Outpaint row visibility + input mirrors + protect-chip state.
 function syncOutpaintControls(node) {
     const row = node._AngeloOutpaintRow;
@@ -3979,6 +4069,7 @@ function syncOutpaintControls(node) {
         }
         hideOutpaintReview(node);
     }
+    syncOutpaintPromptPreview(node);
 }
 
 function triggerReset(node) {
@@ -4657,7 +4748,7 @@ function hideMechanicalWidgets(node) {
         "vary_seq", "vary_pick", "vary_pick_seq",
         // Outpaint — driven by the Outpaint row + edge-click + review overlay
         "outpaint_seq", "outpaint_dir", "outpaint_amount", "outpaint_overlap",
-        "outpaint_accept_seq", "outpaint_protect",
+        "outpaint_accept_seq", "outpaint_protect", "outpaint_instruction_pos",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",

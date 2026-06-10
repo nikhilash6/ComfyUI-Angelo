@@ -1441,6 +1441,16 @@ class AngeloRefine:
                 # (a car at the frame edge) stays frozen while the rest of
                 # the band blends. Declared LAST.
                 "outpaint_protect": ("STRING", {"default": "", "multiline": False}),
+
+                # Where the outpaint instruction sits relative to the user's
+                # Area Prompt text: "prepend" = instruction first (default),
+                # "append" = the user's text first, instruction after. Some
+                # models weight the head of the prompt more heavily, so the
+                # order can change reliability — the JS shows a live preview
+                # of the combined prompt so there's no guessing. The exact
+                # composition here MUST stay in lockstep with the JS preview
+                # (syncOutpaintPromptPreview). Declared LAST.
+                "outpaint_instruction_pos": (["prepend", "append"], {"default": "prepend"}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1544,6 +1554,7 @@ class AngeloRefine:
         outpaint_overlap=64,
         outpaint_accept_seq=0,
         outpaint_protect="",
+        outpaint_instruction_pos="prepend",
         latent=None,
         clip=None,
         overrides=None,
@@ -1989,7 +2000,14 @@ class AngeloRefine:
             if clip is not None:
                 instr = _OUTPAINT_INSTRUCTIONS.get(
                     str(outpaint_dir), _OUTPAINT_INSTRUCTIONS["right"])
-                op_text = instr + (str(area_text_positive) if area_prompt else "")
+                # Instruction order: "prepend" (default) puts the instruction
+                # first; "append" puts the user's Area text first. MUST stay
+                # in lockstep with the JS preview (syncOutpaintPromptPreview).
+                user_txt = str(area_text_positive).strip() if area_prompt else ""
+                if user_txt and str(outpaint_instruction_pos) == "append":
+                    op_text = user_txt.rstrip(" .,") + ". " + instr.strip()
+                else:
+                    op_text = instr + user_txt
                 tokens_p = clip.tokenize(op_text)
                 op_positive = clip.encode_from_tokens_scheduled(tokens_p)
                 if area_prompt and str(area_text_negative).strip():
