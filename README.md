@@ -44,6 +44,7 @@ Angelo collapses all of it into one node:
 - **Paint** a freeform stroke with mouse-down + drag. Same thing but custom shape.
 - **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed. **Six Prompt Slots** keep your presets one click away.
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
+- **Reference toggle for photo restoration** — anchor the subject's identity from the current image while refining at *high* denoise. Load a soft old photo, Reference ON, paint over it, Area Prompt "sharp, high-quality photograph", denoise 0.8 — full texture re-render, same person.
 
 **Add & extend — put new things in, grow the frame**
 
@@ -209,6 +210,7 @@ The Overrides node also carries **`disable_live_preview`** — flip this ON if C
 | **Area Prompt** | Refine with the Area Prompt text typed in the box above the canvas (encoded with the connected `CLIP`) instead of the main prompt. Requires a `CLIP` input + non-empty text. The box only appears when this is ON. Forced ON in both Smart modes |
 | **Paint Mode** | Hold + drag to paint a freeform stroke as the mask, instead of single-circle clicks (Refine only) |
 | **Restore** | When ON, clicks / strokes / Detect masks **restore** the painted region back to the session's original base — a feathered latent blend, no sampling, instant. Bring back details an edit shouldn't have touched. Refine only |
+| **Reference** | When ON, the current image (or Xtra-Fine crop) is injected as a **reference** for edit models — identity is anchored from the reference instead of the noised latent, so Denoise can run high (0.7–1.0) for strong enhancement without losing the subject. The photo-restoration switch. Leave OFF when the Area Prompt wants to *change* the region (references anchor — they fight changes). Refine only; ignored by non-edit models |
 | **Xtra-Fine** | Crop the painted region, upscale via VAE + image upscale, refine at high effective resolution, composite back. ADetailer-style. Forced ON in Smart Inpaint, OFF in Smart Guided Inpaint |
 | **Inpaint ▾** | `Refine` / `Smart Inpaint` / `Smart Guided Inpaint`. See "Inpainting Mode" below |
 
@@ -290,6 +292,25 @@ Notes:
 - It pushes a normal history entry, so **Undo / Redo step through restores** just like refines.
 - **Refine mode only.** The Smart modes generate new content, so "restore to base" has no meaning there — the toggle dims.
 - Pair it with **hold `\`** (see Keyboard shortcuts) to flash the original first and see exactly what you'd be bringing back.
+
+## Photo restoration (the Reference toggle)
+
+Got a soft, noisy, or low-quality photo? There's a dedicated recipe, built around the **Reference** toggle:
+
+1. **Load Image** (or drag-drop) the photo.
+2. **Reference ON** (the sky-blue toggle next to Restore).
+3. **Paint over the area to restore** — or the whole image with a big Click R.
+4. **Area Prompt**: *"sharp, high-quality photograph"* (slot it for reuse).
+5. **Denoise 0.7–0.9.** Queue.
+
+Why the toggle matters: in plain Refine, the subject's identity lives entirely in the partially-noised latent — so real enhancement (high denoise) destroys the person along with the noise, and you're stuck nibbling at 0.3. With Reference ON, an edit model (FLUX 2 Klein / Qwen-Image-Edit) anchors identity and content from the **reference image** through its edit branch instead — denoise can run high, the texture gets *fully re-rendered* (which is where the quality actually comes from), and the subject stays the subject.
+
+The fine print:
+
+- **It anchors.** That's the whole point — and it means Reference ON fights any Area Prompt that wants to *change* the region ("smiling", "eyes open"). Restoration ON, reshaping OFF.
+- With **Xtra-Fine ON**, the reference is the upscaled crop — so the small-region restoration (a face in an old group photo) gets both the resolution boost *and* the identity anchor. This combination is the strongest move in the node for old photos.
+- Verify with **hold `\`** (before/after) and claw back any drifted detail with the **Restore brush** — the three tools were made for each other.
+- Non-edit models (SDXL, FLUX 1) ignore the reference — the toggle is harmless but does nothing there.
 
 ## Inpainting Mode (Refine / Smart Inpaint / Smart Guided Inpaint)
 
