@@ -842,6 +842,20 @@ _QUICK_REFINE_PROMPT_QWEN = ("lightly restore this old photo, remove dust and sc
 _QUICK_REFINE_DENOISE = 1.0
 _QUICK_REFINE_REF = 1.0
 
+# Large Image Refine (the ▦ button): the canvas is divided into ~_LIR_BOX_MP
+# boxes that EXACT-TILE it (no overlap), each refined through the Xtra-Fine
+# pipeline (bit-exact latent compositing — no pixel feathering anywhere) in
+# CHESS-PATTERN order: one colour first, then the other, so second-pass
+# boxes refine with already-refined neighbours visible in their context
+# pad and match them. Hard box masks (feather 0); seam defences are the
+# shared source at this denoise, the ctx pad's cross-border visibility,
+# and the chess ordering.
+_LIR_PROMPT = "restore the image. make it clear and sharp."
+_LIR_REF = 0.4
+_LIR_DENOISE = 0.55
+_LIR_CTX_PAD = 176
+_LIR_BOX_MP = 1.0   # target box area — the tweakable knob
+
 # Tiled restore engine (2× Restore Upscale + big-canvas Quick Refine).
 # Working tile size + overlap in PIXELS: tiles are sampled at ~1MP no
 # matter how large the canvas is, so the latent fed to the model never
@@ -1731,7 +1745,10 @@ class AngeloRefine:
                 # user's next move (e.g. ✨, which auto-tiles when large).
                 "upscale_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
 
-
+                # ▦ Large Image Refine: the button bumps this. Chess-pattern
+                # Xtra-Fine boxes over the whole canvas (see _LIR_* constants).
+                # One history entry for the whole pass. Declared LAST.
+                "lir_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1840,6 +1857,7 @@ class AngeloRefine:
         quick_refine_seq=0,
         reference_strength=0.0,
         upscale_seq=0,
+        lir_seq=0,
         latent=None,
         clip=None,
         overrides=None,
@@ -2031,6 +2049,7 @@ class AngeloRefine:
                 "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
+                "lir_seq": lir_seq,
                 "fingerprint": incoming_fp,
                 "sampler_seed_at_run": int(sampler_seed),
                 "loaded_seq": loaded_seq,
@@ -2109,6 +2128,7 @@ class AngeloRefine:
                 "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
+                "lir_seq": lir_seq,
                 "fingerprint": incoming_fp,
                 "loaded_seq": loaded_seq,
                 # Source image (#3/#9): capture the base once, independent of
@@ -2205,6 +2225,7 @@ class AngeloRefine:
                     "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
+                "lir_seq": lir_seq,
                     # Preserve the wired-latent fingerprint + load marker so
                     # the next run doesn't read the unchanged upstream as a
                     # fresh latent and blow away the canvas we just committed.
@@ -2462,6 +2483,7 @@ class AngeloRefine:
                 "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
+                "lir_seq": lir_seq,
                 "fingerprint": state.get("fingerprint"),
                 "loaded_seq": state.get("loaded_seq"),
                 "sampler_seed_at_run": state.get("sampler_seed_at_run", int(sampler_seed)),
@@ -2473,6 +2495,83 @@ class AngeloRefine:
             }
             state = _STATE[node_id]
             current, current_pixels = up_latent, up_pixels
+
+        # ===== ▦ Large Image Refine: chess-pattern Xtra-Fine boxes =====
+        # The whole canvas refined box by box through the Xtra-Fine
+        # pipeline — bit-exact latent compositing per box, no pixel
+        # feathering. Chess order so the second colour's boxes see
+        # already-refined neighbours in their context pad. One history
+        # entry for the whole pass (one Undo reverts it all).
+        new_lir = (
+            inpainting_mode == "Refine"
+            and lir_seq > 0
+            and lir_seq != state.get("lir_seq", -1)
+        )
+        state["lir_seq"] = lir_seq
+        if new_lir:
+            if clip is not None:
+                tokens_l = clip.tokenize(_LIR_PROMPT)
+                lir_base = clip.encode_from_tokens_scheduled(tokens_l)
+            else:
+                lir_base = positive
+            lir_seed = int(seed)
+            callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
+            disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+            lir_px = current_pixels if current_pixels is not None else _vae_decode(vae, current)
+            H_pix, W_pix = lir_px.shape[1], lir_px.shape[2]
+            nlh, nlw = current.shape[-2], current.shape[-1]
+            sx = nlw / W_pix
+            sy = nlh / H_pix
+            box_edge = math.sqrt(_LIR_BOX_MP * 1e6)
+            nx = max(1, round(W_pix / box_edge))
+            ny = max(1, round(H_pix / box_edge))
+            x_edges = [round(i * nlw / nx) for i in range(nx + 1)]
+            y_edges = [round(j * nlh / ny) for j in range(ny + 1)]
+            boxes = [(i, j, x_edges[i], y_edges[j], x_edges[i + 1], y_edges[j + 1])
+                     for j in range(ny) for i in range(nx)]
+            # Chess order: one colour, then the other.
+            order = ([b for b in boxes if (b[0] + b[1]) % 2 == 0]
+                     + [b for b in boxes if (b[0] + b[1]) % 2 == 1])
+            print(f"[Angelo large-refine] {W_pix}x{H_pix}: {nx}x{ny} boxes "
+                  f"(~{_LIR_BOX_MP}MP target), chess order, ref={_LIR_REF}, "
+                  f"denoise={_LIR_DENOISE}, pad={_LIR_CTX_PAD}px, feather 0")
+            work_lat, work_px = current, lir_px
+            for k, (bi, bj, x0, y0, x1, y1) in enumerate(order):
+                box_mask = torch.zeros((1, nlh, nlw), device=work_lat.device, dtype=torch.float32)
+                box_mask[0, y0:y1, x0:x1] = 1.0   # hard box — feather 0
+                bw_px = (x1 - x0) / sx
+                bh_px = (y1 - y0) / sy
+                crop_mp = max(0.05, ((bw_px + 2 * _LIR_CTX_PAD) * (bh_px + 2 * _LIR_CTX_PAD)) / 1e6)
+                work_lat, fresh_px = _refine_with_fine_upscaling(
+                    model=model, vae=vae, current=work_lat,
+                    current_pixels=work_px, mask=box_mask,
+                    scale_x=sx, scale_y=sy,
+                    target_mp=crop_mp * 1.02,   # force the crop path — never
+                                                # the whole-canvas shortcut
+                    max_linear=8.0, resize_method="lanczos",
+                    context_pad_pixel=_LIR_CTX_PAD,
+                    inpainting_mode="Refine",
+                    reference_strength=_LIR_REF,
+                    seed=(lir_seed + k * 9973) & 0xFFFFFFFFFFFFFFFF,
+                    steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                    positive=lir_base, negative=negative,
+                    denoise=_LIR_DENOISE,
+                    callback=callback, disable_pbar=disable_pbar,
+                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                )
+                if fresh_px is None:
+                    work_px = _vae_decode(vae, work_lat)
+                else:
+                    work_px = fresh_px
+            state["history"].append((work_lat, work_px))
+            if len(state["history"]) > _HISTORY_CAP:
+                state["history"] = state["history"][-_HISTORY_CAP:]
+            state["redo_stack"] = []
+            state["vary_candidates"] = None
+            state["outpaint_pending"] = None
+            state["click_seq"] = click_seq
+            state["refine_seed_at_run"] = lir_seed
+            current, current_pixels = work_lat, work_px
 
         # Has the user clicked since our last execution for this node?
         # Never treat a queue-hook click_seq bump as an edit in Outpaint

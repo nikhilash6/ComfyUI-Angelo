@@ -878,6 +878,19 @@ function attachPreviewCanvas(node) {
     quickRow.appendChild(upscaleBtn);
     node._AngeloUpscaleBtn = upscaleBtn;
 
+    const lirBtn = makeActionButton("▦ Large Image Refine", () => triggerLargeImageRefine(node), "quickfix");
+    lirBtn.title = "Refine a LARGE canvas in one press: the image is divided into ~1MP boxes that "
+        + "exactly tile it, and each box runs an Xtra-Fine refine (ref 0.4, denoise 0.55, 176px "
+        + "context pad, hard edges) under the instruction \"restore the image. make it clear and "
+        + "sharp.\" — processed in a CHESS pattern, so the second half of the boxes refine with "
+        + "already-refined neighbours visible in their context and match them. Compositing is "
+        + "Xtra-Fine's bit-exact latent blend — no pixel feathering anywhere.\n\n"
+        + "The whole pass is ONE history entry (one Undo reverts it all); the Seed drives it "
+        + "(randomize + re-press = a fresh full pass). The natural partner of ⬆ 2× Pixel: enlarge "
+        + "first, then refine the detail in. Edit models + CLIP recommended; Refine mode only.";
+    quickRow.appendChild(lirBtn);
+    node._AngeloLirBtn = lirBtn;
+
     // ===== OUTPAINT ROW: direction + amount (Outpaint mode only) =====
     // Arrows extend the canvas in that direction; "All" pads every side
     // (zoom-out). The same action is available by clicking near an edge
@@ -4025,6 +4038,22 @@ function triggerPixelUpscale(node) {
     queuePrompt();
 }
 
+// ▦ Large Image Refine: chess-pattern Xtra-Fine boxes over the whole
+// canvas. Python owns the loop; the JS only bumps the seq.
+function triggerLargeImageRefine(node) {
+    if (isAnySmartMode(node) || isOutpaintMode(node)) return;  // dimmed there anyway
+    if (!node._AngeloImg) {
+        _angeloToast("Generate or load an image first");
+        return;
+    }
+    const ws = findWidget(node, "lir_seq");
+    if (!ws) return;
+    setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
+    _angeloToast("▦ Large Image Refine — chess-pattern pass over the canvas…");
+    dbg("queue large image refine", { lir_seq: ws.value });
+    queuePrompt();
+}
+
 // ===== Outpaint — directional canvas extension with review-before-commit =====
 
 function isOutpaintMode(node) {
@@ -4902,8 +4931,8 @@ function hideMechanicalWidgets(node) {
         "refine_reference", "reference_strength",
         // Quick Photo Refine — driven by the ✨ button
         "quick_refine_seq",
-        // ⬆ 2× Pixel — driven by the button
-        "upscale_seq",
+        // ⬆ 2× Pixel + ▦ Large Image Refine — driven by their buttons
+        "upscale_seq", "lir_seq",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
