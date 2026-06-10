@@ -826,12 +826,19 @@ def _refine_with_fine_upscaling(
 # box. The whole canvas is re-rendered with this prompt, anchored to the
 # current image via reference_latents — identity from the reference,
 # texture from the re-render. Tested values; tuned here in ONE place.
-# The winning prompt is an INSTRUCTION ("restore the photo") — edit
-# models are instruction-trained, so speaking their vocabulary beat
-# every descriptive/constraint phrasing tried ("high quality photo",
-# keep-the-colours variants — see git history). At ref 1.0 the blend
-# collapses to a single cond, so this recipe also costs nothing extra.
+# The winning prompt is an INSTRUCTION — edit models are instruction-
+# trained, so speaking their vocabulary beat every descriptive/
+# constraint phrasing tried ("high quality photo", keep-the-colours
+# variants — see git history). At ref 1.0 the blend collapses to a
+# single cond, so this recipe also costs nothing extra.
+#
+# Per-model phrasing: Qwen-Image-Edit responds better to a fuller,
+# gentler instruction than Klein does. Selected at run time by latent
+# dimensionality — Qwen/Wan-family latents are 5D [B,C,T,H,W], the
+# same load-bearing check the inpaint hard-mask logic uses.
 _QUICK_REFINE_PROMPT = "restore the photo"
+_QUICK_REFINE_PROMPT_QWEN = ("lightly restore this old photo, remove dust and scratches, "
+                             "improve sharpness and contrast, preserve original feel")
 _QUICK_REFINE_DENOISE = 1.0
 _QUICK_REFINE_REF = 1.0
 
@@ -2172,8 +2179,12 @@ class AngeloRefine:
         )
         state["quick_refine_seq"] = quick_refine_seq
         if new_quick:
+            # Per-model prompt: 5D latent = Qwen/Wan family (fuller, gentler
+            # instruction); 4D = FLUX family ("restore the photo").
+            qr_prompt = (_QUICK_REFINE_PROMPT_QWEN if current.dim() == 5
+                         else _QUICK_REFINE_PROMPT)
             if clip is not None:
-                tokens_q = clip.tokenize(_QUICK_REFINE_PROMPT)
+                tokens_q = clip.tokenize(qr_prompt)
                 qr_positive = clip.encode_from_tokens_scheduled(tokens_q)
             else:
                 # No CLIP → can't encode the restoration prompt; the main

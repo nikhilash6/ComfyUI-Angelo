@@ -594,7 +594,7 @@ function attachPreviewCanvas(node) {
 
     const quickFixBtn = makeActionButton("✨ Quick Photo Refine", () => triggerQuickPhotoRefine(node), "quickfix");
     quickFixBtn.title = "One-click photo restoration — a true magic button with its own fixed "
-        + "recipe: whole image, the instruction \"restore the photo\", denoise 1.0, reference anchor 1.0 (fully anchored). "
+        + "recipe: whole image, a model-tuned restoration instruction (\"restore the photo\" on FLUX-family; a fuller dust-and-scratches variant on Qwen-Image-Edit, auto-detected), denoise 1.0, reference anchor 1.0 (fully anchored). "
         + "Identity stays, texture re-renders. NO toolbar box affects it — Denoise, Reference, "
         + "Area Prompt, toggles: all ignored. Only the Seed applies (leave Ctrl on randomize and "
         + "mash the button for variations); Undo steps back through passes.\n\n"
