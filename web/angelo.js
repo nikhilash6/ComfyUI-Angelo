@@ -654,25 +654,6 @@ function attachPreviewCanvas(node) {
     row1.appendChild(restoreToggle);
     node._AngeloRestoreToggle = restoreToggle;
 
-    const refineRefInput = makeNumberInput("Ref", { min: 0, max: 1, step: 0.05, width: 50 }, (val) => {
-        const w = findWidget(node, "reference_strength");
-        if (!w) return;
-        setWidget(w, val);
-    });
-    refineRefInput.title = "Reference strength (0–1, Refine mode) — how strongly the current image "
-        + "anchors the edit. A TRUE blend: every step mixes the reference-anchored prediction with "
-        + "the free one at this ratio (0.6 = 60% anchored / 40% free). 0 = no reference (classic "
-        + "refine), 1 = fully anchored (strongest identity hold).\n\n"
-        + "Photo restoration: try 0.6–1.0 with high Denoise — identity stays while the texture "
-        + "fully re-renders. Applies to brush/click refines AND Quick Photo Refine (at 0, Quick "
-        + "Refine runs UN-anchored — it will regenerate the image at high denoise).\n\n"
-        + "Values between 0 and 1 run a second positive pass per step (like CFG's negative does) — "
-        + "a bit slower, that's the price of a real blend; 0 and 1 cost nothing extra. Keep at 0 "
-        + "when your Area Prompt wants to CHANGE the region (anchoring fights the change). With "
-        + "Xtra-Fine ON the reference is the upscaled crop. Edit models only (Klein / Qwen).";
-    row1.appendChild(refineRefInput);
-    node._AngeloRefineRefInput = refineRefInput;
-
     const fineUpscaleToggle = makeToggleButton("Xtra-Fine", () => {
         const w = findWidget(node, "fine_upscaling");
         if (!w) return;
@@ -682,6 +663,56 @@ function attachPreviewCanvas(node) {
     fineUpscaleToggle.title = "Xtra-Fine — refine the painted region at much higher effective resolution (ADetailer-style). The region is cropped, enlarged in pixel space to the MP target, re-encoded, refined, and composited back, so the model has room to render fine detail (faces, hands, eyes). Capped at Max scale.\n\nTip: pair it with Area Prompt — describe exactly what that region should be (e.g. \"detailed photorealistic face, sharp eyes\") for the strongest result.";
     row1.appendChild(fineUpscaleToggle);
     node._AngeloFineUpscaleToggle = fineUpscaleToggle;
+
+    // Reference: a unified toggle + strength pair. The strength box only
+    // exists while the toggle is lit — joined borders make them read as
+    // one control.
+    const refGroup = document.createElement("div");
+    refGroup.style.cssText = "display:inline-flex; align-items:stretch; flex:0 0 auto;";
+    const refineRefToggle = makeToggleButton("Reference", () => {
+        const w = findWidget(node, "refine_reference");
+        if (!w) return;
+        const next = !w.value;
+        setWidget(w, next);
+        if (next) {
+            // Switching ON must mean something — seed a sensible strength
+            // if the box is still at zero.
+            const sw = findWidget(node, "reference_strength");
+            if (sw && !(Number(sw.value) > 0)) setWidget(sw, 0.8);
+        }
+        syncReferenceControls(node);
+    });
+    refineRefToggle.title = "Reference (Refine mode) — anchor the edit to the current image. When ON, "
+        + "the strength box beside it sets a TRUE 0–1 blend: every step mixes the reference-anchored "
+        + "prediction with the free one at that ratio (0.6 = 60% anchored / 40% free). 1 = fully "
+        + "anchored (strongest identity hold).\n\n"
+        + "Photo restoration: ON at 0.6–1.0 with high Denoise — identity stays while the texture "
+        + "fully re-renders. With Xtra-Fine ON the reference is the upscaled crop.\n\n"
+        + "In-between strengths run a second positive pass per step (like CFG's negative) — a bit "
+        + "slower; 1.0 costs nothing extra. Leave OFF when your Area Prompt wants to CHANGE the "
+        + "region (anchoring fights the change). Edit models only (Klein / Qwen).\n\n"
+        + "✨ Quick Photo Refine: uses this strength when ON; defaults to a FULL anchor when OFF.";
+    refGroup.appendChild(refineRefToggle);
+    const refineRefInput = makeNumberInput("", { min: 0, max: 1, step: 0.05, width: 46 }, (val) => {
+        const w = findWidget(node, "reference_strength");
+        if (!w) return;
+        setWidget(w, val);
+    });
+    refineRefInput.title = "Reference strength: the anchored/free blend ratio (0.6 = 60% anchored). "
+        + "Restoration sweet spot is usually 0.6–1.0.";
+    refineRefInput.style.padding = "0";
+    refineRefInput.style.gap = "0";
+    if (refineRefInput._AngeloInput) {
+        refineRefInput._AngeloInput.style.borderRadius = "0 3px 3px 0";
+        refineRefInput._AngeloInput.style.borderLeft = "none";
+        refineRefInput._AngeloInput.style.height = "100%";
+        refineRefInput._AngeloInput.style.boxSizing = "border-box";
+    }
+    refGroup.appendChild(refineRefInput);
+    row1.appendChild(refGroup);
+    node._AngeloRefGroup = refGroup;
+    node._AngeloRefineRefToggle = refineRefToggle;
+    node._AngeloRefineRefInput = refineRefInput;
 
     row1.appendChild(makeSeparator());
 
@@ -3953,11 +3984,14 @@ function triggerQuickPhotoRefine(node) {
     const ws = findWidget(node, "quick_refine_seq");
     if (!ws) return;
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    const refV = Number(findWidget(node, "reference_strength")?.value || 0);
+    // Reference OFF → Quick Refine defaults to a FULL anchor (its classic
+    // recipe). Reference ON → the strength box drives it, literally.
+    const refOn = !!(findWidget(node, "refine_reference")?.value);
+    const refV = refOn ? Number(findWidget(node, "reference_strength")?.value || 0) : 1.0;
     _angeloToast(refV > 0
         ? `✨ Quick Photo Refine — reference at ${Math.round(refV * 100)}%…`
-        : "✨ Quick Photo Refine — Ref is 0: running UN-anchored (full regeneration at high denoise)");
-    dbg("queue quick photo refine", { quick_refine_seq: ws.value, ref: refV });
+        : "✨ Quick Photo Refine — Reference strength 0: running UN-anchored (full regeneration at high denoise)");
+    dbg("queue quick photo refine", { quick_refine_seq: ws.value, refOn, ref: refV });
     queuePrompt();
 }
 
@@ -4307,8 +4341,18 @@ function syncRestoreToggle(node) {
     _syncToggle(node._AngeloRestoreToggle, effective, _TOGGLE_ON_COLORS.amber);
 }
 
-function syncReferenceStrengthInput(node) {
-    _syncNumberInput(node._AngeloRefineRefInput, findWidget(node, "reference_strength")?.value);
+function syncReferenceControls(node) {
+    // Effective OFF in the Smart modes / Outpaint (their own reference
+    // logic) regardless of the stored widget value.
+    const on = !!(findWidget(node, "refine_reference")?.value)
+        && !isAnySmartMode(node) && !isOutpaintMode(node);
+    _syncToggle(node._AngeloRefineRefToggle, on, _TOGGLE_ON_COLORS.sky);
+    const wrap = node._AngeloRefineRefInput;
+    if (wrap) wrap.style.display = on ? "inline-flex" : "none";
+    if (node._AngeloRefineRefToggle) {
+        node._AngeloRefineRefToggle.style.borderRadius = on ? "3px 0 0 3px" : "3px";
+    }
+    _syncNumberInput(wrap, findWidget(node, "reference_strength")?.value);
 }
 
 function syncFineUpscaleToggle(node) {
@@ -4376,7 +4420,7 @@ function syncSmartInpaintLockedWidgets(node) {
         "_AngeloFineUpscaleToggle",
         "_AngeloPaintModeToggle",
         "_AngeloRestoreToggle",
-        "_AngeloRefineRefInput",
+        "_AngeloRefGroup",
         "_AngeloCtxPadInput",
     ], anySmart || outp);
     // Click R stays LIVE in Outpaint — it's the protect-brush size there.
@@ -4412,7 +4456,7 @@ function syncSmartInpaintLockedWidgets(node) {
     syncAreaPromptToggle(node);
     syncPersistentMaskToggle(node);
     syncRestoreToggle(node);
-    syncReferenceStrengthInput(node);
+    syncReferenceControls(node);
     syncAreaPromptVisibility(node);
     // Detect row hides in Smart Guided (no mask), shows in Refine/Smart Inpaint.
     syncDetectControls(node);
@@ -4655,7 +4699,7 @@ function syncAllToolbarControls(node) {
     syncAreaPromptToggle(node);
     syncPaintModeToggle(node);
     syncRestoreToggle(node);
-    syncReferenceStrengthInput(node);
+    syncReferenceControls(node);
     syncPromptSlotButtons(node);
     syncFineUpscaleToggle(node);
     syncClickRadiusInput(node);

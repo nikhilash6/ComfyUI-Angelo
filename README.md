@@ -44,7 +44,7 @@ Angelo collapses all of it into one node:
 - **Paint** a freeform stroke with mouse-down + drag. Same thing but custom shape.
 - **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed. **Six Prompt Slots** keep your presets one click away.
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
-- **Reference value for photo restoration** — a true 0–1 dial for how strongly the current image anchors the edit. Load a soft old photo, Ref 0.8, paint over it, Area Prompt "sharp, high-quality photograph", denoise 0.8 — full texture re-render, same person.
+- **Reference anchoring for photo restoration** — a toggle with a true 0–1 strength dial for how strongly the current image anchors the edit. Load a soft old photo, Reference ON at 0.8, paint over it, Area Prompt "sharp, high-quality photograph", denoise 0.8 — full texture re-render, same person.
 - **✨ Quick Photo Refine** — or skip the recipe entirely: one button runs the whole restoration pass (full canvas, restoration prompt, reference anchor, at your Denoise setting — 1.0 for the full re-render). Load photo, press, done. Mash it with seed-randomize for variations; Undo any pass you don't like.
 
 **Add & extend — put new things in, grow the frame**
@@ -76,7 +76,7 @@ Angelo treats **FLUX 2 Klein 9B** and **Qwen-Image-Edit** as its two first-class
 
 Two latent layouts are handled transparently. **Standard 4D models** (FLUX, SDXL, SD) use `[B, C, H, W]` latents. **Temporal / video-derived models** (Qwen Image Edit, Wan) use 5D `[B, C, T, H, W]` latents — their VAEs carry an extra frame axis. Angelo normalises latent shape at a single VAE boundary and feeds each model the dimensionality it expects before sampling (the same step ComfyUI's stock KSampler does), so you don't need a model-specific latent node — wire `model`, `vae`, and `clip` as usual.
 
-For the **Smart** inpaint modes, use an **edit-trained** checkpoint — **FLUX 2 Klein 9B** or **Qwen-Image-Edit** (not plain Qwen-Image, which has the reference code path but isn't trained for it; see [Inpainting Mode](#inpainting-mode-refine--smart-inpaint--smart-guided-inpaint--outpaint)). **Refine** (incl. Xtra-Fine and Area Prompt) works on any model. The **Ref** value (photo restoration) also needs an edit model to have an effect. **Outpaint** works on any model too, but is *best* on the edit models — they get an edge-band reference and follow the continue-the-scene instruction, which is what keeps extensions in-style and subjects un-duplicated.
+For the **Smart** inpaint modes, use an **edit-trained** checkpoint — **FLUX 2 Klein 9B** or **Qwen-Image-Edit** (not plain Qwen-Image, which has the reference code path but isn't trained for it; see [Inpainting Mode](#inpainting-mode-refine--smart-inpaint--smart-guided-inpaint--outpaint)). **Refine** (incl. Xtra-Fine and Area Prompt) works on any model. The **Reference** anchor (photo restoration) also needs an edit model to have an effect. **Outpaint** works on any model too, but is *best* on the edit models — they get an edge-band reference and follow the continue-the-scene instruction, which is what keeps extensions in-style and subjects un-duplicated.
 
 ## Install
 
@@ -179,7 +179,7 @@ The toolbar holds everything — there are no native widget rows. Top to bottom,
   [Steps] [CFG] [Sampler ▾] [Sched ▾]            ← shared generation config (always active)
   [Smpl Seed] [Smpl Ctrl ▾] [Smpl Denoise]       ← base-gen seed (greys in Edit Mode)
  ─────────────────────────────────────────
-  [Reset] [⟲⟳] [Re-roll] [Vary ×4] [✨ Quick Photo Refine] | [Persistent Mask] [Area Prompt] [Paint Mode] [Restore] [Ref] [Xtra-Fine] | [Inpaint ▾]
+  [Reset] [⟲⟳] [Re-roll] [Vary ×4] [✨ Quick Photo Refine] | [Persistent Mask] [Area Prompt] [Paint Mode] [Restore] [Xtra-Fine] [Reference·str] | [Inpaint ▾]
   [Click R] [Feather] [Denoise] [Seed] [Ctrl ▾] | [MP] [Max] [Ctx Pad] [Method ▾]  ← edit block (greys in Sampler Mode)
   [⛶ Outpaint: ← ↑ ↓ → All | Amount Overlap]                                       ← appears in Outpaint mode only
 ```
@@ -213,7 +213,7 @@ The Overrides node also carries **`disable_live_preview`** — flip this ON if C
 | **Area Prompt** | Refine with the Area Prompt text typed in the box above the canvas (encoded with the connected `CLIP`) instead of the main prompt. Requires a `CLIP` input + non-empty text. The box only appears when this is ON. Forced ON in both Smart modes |
 | **Paint Mode** | Hold + drag to paint a freeform stroke as the mask, instead of single-circle clicks (Refine only) |
 | **Restore** | When ON, clicks / strokes / Detect masks **restore** the painted region back to the session's original base — a feathered latent blend, no sampling, instant. Bring back details an edit shouldn't have touched. Refine only |
-| **Ref** | Reference strength, 0–1: a **true blend** — every step mixes the reference-anchored prediction with the free one at this ratio (0.6 = 60% anchored). 0 = classic refine, 1 = fully anchored. Lets Denoise run high (0.7–1.0) without losing the subject — the photo-restoration dial. In-between values run a second positive pass per step (slightly slower; 0 and 1 cost nothing). Keep at 0 when the Area Prompt wants to *change* the region (anchoring fights changes). Also drives ✨ Quick Photo Refine. Refine only; needs an edit model |
+| **Reference** (+ strength box) | Anchor refines to the current image. When ON, a strength box appears beside it: a **true 0–1 blend** — every step mixes the reference-anchored prediction with the free one at that ratio (0.6 = 60% anchored; 1 = fully anchored). Lets Denoise run high (0.7–1.0) without losing the subject — the photo-restoration dial. In-between values run a second positive pass per step (slightly slower; 1.0 costs nothing). Leave OFF when the Area Prompt wants to *change* the region (anchoring fights changes). ✨ Quick Photo Refine uses the strength when ON, full anchor when OFF. Refine only; needs an edit model |
 | **Xtra-Fine** | Crop the painted region, upscale via VAE + image upscale, refine at high effective resolution, composite back. ADetailer-style. Forced ON in Smart Inpaint, OFF in Smart Guided Inpaint |
 | **Inpaint ▾** | `Refine` / `Smart Inpaint` / `Smart Guided Inpaint` / `Outpaint`. See "Inpainting Mode" below |
 
@@ -300,21 +300,21 @@ Notes:
 
 Got a soft, noisy, or low-quality photo? The fastest path is one button:
 
-**✨ Quick Photo Refine** (in the edit row, Refine mode only). One press re-renders the **whole image** with an internal *"high quality photo"* prompt, anchored to the current image as a reference — exactly the same pass as setting Ref and painting the whole picture, minus the painting — identity stays, texture re-renders. It respects exactly three toolbar values: **Denoise** (1.0 = full re-render, the strongest restoration; 0.5–0.7 = gentler clean-up), **Ref** (how strongly the anchor holds — at 0 the pass runs *un-anchored* and will simply regenerate the image at high denoise), and the **Seed** — so leave Seed Ctrl on `randomize` and **mash the button to cycle restoration variations**, using Undo to step back through them (or `\` to compare against the original). Area Prompt and the toggles are ignored. Load photo → set Denoise + Ref → press → done.
+**✨ Quick Photo Refine** (in the edit row, Refine mode only). One press re-renders the **whole image** with an internal *"high quality photo"* prompt, anchored to the current image as a reference — exactly the same pass as setting Ref and painting the whole picture, minus the painting — identity stays, texture re-renders. It respects exactly these toolbar values: **Denoise** (1.0 = full re-render, the strongest restoration; 0.5–0.7 = gentler clean-up), **Reference** (toggle OFF = the full anchor of the classic recipe; toggle ON = the strength box drives the blend — at 0 the pass runs *un-anchored* and will simply regenerate the image at high denoise), and the **Seed** — so leave Seed Ctrl on `randomize` and **mash the button to cycle restoration variations**, using Undo to step back through them (or `\` to compare against the original). Area Prompt and the toggles are ignored. Load photo → set Denoise → press → done (toggle Reference ON to dial the anchor instead of the default full hold).
 
 Want control over the prompt or the region? The manual recipe underneath it is the **Ref** value:
 
 1. **Load Image** (or drag-drop) the photo.
-2. **Ref 0.8–1.0** (the value box next to Restore).
+2. **Reference ON** (right of Xtra-Fine) — a strength box appears beside it; 0.8–1.0 for restoration.
 3. **Paint over the area to restore** — or the whole image with a big Click R.
 4. **Area Prompt**: *"sharp, high-quality photograph"* (slot it for reuse).
 5. **Denoise 0.7–0.9.** Queue.
 
-Why Ref matters: in plain Refine, the subject's identity lives entirely in the partially-noised latent — so real enhancement (high denoise) destroys the person along with the noise, and you're stuck nibbling at 0.3. With Ref > 0, an edit model (FLUX 2 Klein / Qwen-Image-Edit) anchors identity and content from the **reference image** through its edit branch instead — denoise can run high, the texture gets *fully re-rendered* (which is where the quality actually comes from), and the subject stays the subject. The value is a **true blend**: at every sampling step the anchored prediction and the free prediction are mixed at your ratio — 1.0 holds identity hardest, ~0.5–0.7 trades some anchoring for extra texture freedom. (In-between values evaluate both predictions per step, like CFG does for the negative — slightly slower, and worth it.) Tune to taste per photo.
+Why Reference matters: in plain Refine, the subject's identity lives entirely in the partially-noised latent — so real enhancement (high denoise) destroys the person along with the noise, and you're stuck nibbling at 0.3. With Reference ON, an edit model (FLUX 2 Klein / Qwen-Image-Edit) anchors identity and content from the **reference image** through its edit branch instead — denoise can run high, the texture gets *fully re-rendered* (which is where the quality actually comes from), and the subject stays the subject. The value is a **true blend**: at every sampling step the anchored prediction and the free prediction are mixed at your ratio — 1.0 holds identity hardest, ~0.5–0.7 trades some anchoring for extra texture freedom. (In-between values evaluate both predictions per step, like CFG does for the negative — slightly slower, and worth it.) Tune to taste per photo.
 
 The fine print:
 
-- **It anchors.** That's the whole point — and it means Ref > 0 fights any Area Prompt that wants to *change* the region ("smiling", "eyes open"). Restoration high, reshaping 0.
+- **It anchors.** That's the whole point — and it means Reference ON fights any Area Prompt that wants to *change* the region ("smiling", "eyes open"). Restoration ON, reshaping OFF.
 - With **Xtra-Fine ON**, the reference is the upscaled crop — so the small-region restoration (a face in an old group photo) gets both the resolution boost *and* the identity anchor. This combination is the strongest move in the node for old photos.
 - Verify with **hold `\`** (before/after) and claw back any drifted detail with the **Restore brush** — the three tools were made for each other.
 - Non-edit models (SDXL, FLUX 1) ignore the reference — the toggle is harmless but does nothing there. **Quick Photo Refine, however, is NOT harmless on non-edit models**: with the reference ignored, a high-denoise full-canvas pass simply regenerates the image. Undo brings it back, but the button is for edit models.

@@ -1512,13 +1512,19 @@ class AngeloRefine:
                 # (syncOutpaintPromptPreview). Declared LAST.
                 "outpaint_instruction_pos": (["prepend", "append"], {"default": "prepend"}),
 
-                # DEPRECATED — replaced by reference_strength below (the
-                # boolean became a 0–1 schedule-fraction value). Kept
-                # declared (like auto_decode) so positional widgets_values
-                # in saved workflows don't shift. run() ignores it.
+                # Reference toggle: ON/OFF for the anchored-refine feature;
+                # reference_strength (declared further down) is the 0–1
+                # blend it applies when ON. Manual refines use
+                # toggle AND strength; Quick Photo Refine uses the strength
+                # when the toggle is ON and defaults to a FULL anchor (1.0)
+                # when OFF — its classic recipe must not be neutered by the
+                # toggle's off-by-default state.
                 "refine_reference": ("BOOLEAN", {"default": False,
-                                                 "tooltip": "(Deprecated — use the Ref value box; "
-                                                            "this widget is ignored.)"}),
+                                                 "tooltip": "Anchor refines to the current image "
+                                                            "(edit models). The strength box "
+                                                            "beside the toolbar button sets the "
+                                                            "blend. Toggled via the Reference "
+                                                            "button."}),
 
                 # Quick Photo Refine: the ✨ button bumps this. One-shot
                 # restoration pass — whole canvas, the internal
@@ -2171,12 +2177,15 @@ class AngeloRefine:
                 # No CLIP → can't encode the restoration prompt; the main
                 # positive flows through. Still works, just less targeted.
                 qr_positive = positive
-            # Whole-image reference at the toolbar's Ref strength —
-            # IDENTICAL construction to the manual path (whole canvas
-            # painted). Quick Refine is that recipe, not a variant of it.
-            # At Ref 0 the pass runs UN-anchored (full regeneration at
-            # high denoise) — respected literally, warned in the JS toast.
-            qr_strength = max(0.0, min(1.0, float(reference_strength)))
+            # Whole-image reference — IDENTICAL construction to the manual
+            # path (whole canvas painted). Reference toggle ON → the
+            # strength box drives it, literally (0 = un-anchored, warned in
+            # the JS toast). Toggle OFF → FULL anchor: ✨'s classic recipe
+            # must work out of the box.
+            if bool(refine_reference):
+                qr_strength = max(0.0, min(1.0, float(reference_strength)))
+            else:
+                qr_strength = 1.0
             qr_positive = _apply_reference(qr_positive, current.clone(), qr_strength)
             qr_seed = int(seed)
             callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
@@ -2425,7 +2434,7 @@ class AngeloRefine:
             # its upscaled crop instead (reference_strength passed below).
             # Restore never samples, so it's excluded.
             ref_strength = 0.0
-            if inpainting_mode == "Refine" and not restore_now:
+            if inpainting_mode == "Refine" and not restore_now and bool(refine_reference):
                 ref_strength = max(0.0, min(1.0, float(reference_strength)))
             if ref_strength > 0.0 and not fine_upscaling:
                 refine_positive = _apply_reference(
