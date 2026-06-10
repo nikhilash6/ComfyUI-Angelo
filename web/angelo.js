@@ -848,9 +848,36 @@ function attachPreviewCanvas(node) {
     node._AngeloOutpaintOverlapInput = opOverlapInput;
 
     const opHint = document.createElement("span");
-    opHint.textContent = "…or click near an edge of the preview";
+    opHint.textContent = "click near an edge = extend · drag the interior = protect";
     opHint.style.cssText = "font-size:10px; color:#8aa; padding:0 4px; white-space:nowrap;";
+    opHint.title = "Two canvas gestures in Outpaint mode:\n"
+        + "• Click near an edge — extend the canvas that way (a glowing band previews it).\n"
+        + "• Drag in the interior — paint a PROTECT region (red). Protected pixels are "
+        + "excluded from the Overlap band, so something near the frame edge (a car, a face) "
+        + "stays exactly as-is while the rest of the seam still blends generously. "
+        + "Brush size = Click R.";
     outpaintRow.appendChild(opHint);
+
+    const opClearProtectBtn = document.createElement("button");
+    opClearProtectBtn.type = "button";
+    opClearProtectBtn.textContent = "✕ Protect";
+    opClearProtectBtn.title = "Clear the painted protect region.";
+    opClearProtectBtn.style.cssText = "cursor:pointer; padding:2px 8px; font-size:10px; "
+        + "border:1px solid rgba(255,120,120,0.7); border-radius:3px; "
+        + "background:rgba(80,40,40,0.95); color:#fbb; line-height:1.4; "
+        + "user-select:none; flex:0 0 auto; display:none;";
+    opClearProtectBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    opClearProtectBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        node._AngeloProtect = [];
+        const wpr = findWidget(node, "outpaint_protect");
+        if (wpr) setWidget(wpr, "");
+        syncOutpaintControls(node);
+        redrawCanvasWithOverlays(node);
+    });
+    outpaintRow.appendChild(opClearProtectBtn);
+    node._AngeloOutpaintClearProtectBtn = opClearProtectBtn;
 
     // ===== DETECT ROW: SAM 3 auto-segment (Refine + Smart Inpaint) =====
     const detLabel = document.createElement("span");
@@ -1606,9 +1633,19 @@ function attachPreviewCanvas(node) {
         if (!p) return;
         node._AngeloHover = { x: p.cssX, y: p.cssY };
 
-        // Outpaint mode: the canvas is a direction picker — hovering near
-        // an edge highlights the extension band, clicking commits it.
+        // Outpaint mode: edges are the direction picker, the interior is
+        // the protect brush — an active drag stamps protect circles.
         if (isOutpaintMode(node)) {
+            if (node._AngeloOutpaintPainting) {
+                const prot = node._AngeloProtect = node._AngeloProtect || [];
+                const last = prot[prot.length - 1];
+                const r = _brushRadius(node);
+                if (!last || Math.hypot(last[0] - p.pixelX, last[1] - p.pixelY) > r * 0.3) {
+                    prot.push([p.pixelX, p.pixelY, r]);
+                }
+                redrawCanvasWithOverlays(node);
+                return;
+            }
             const dir = _outpaintEdgeDir(node, p);
             if (dir !== node._AngeloOutpaintHoverDir) {
                 node._AngeloOutpaintHoverDir = dir;
@@ -1711,9 +1748,23 @@ function attachPreviewCanvas(node) {
             }
             return;
         }
-        // Outpaint mode: no strokes or rectangles — the click handler owns
-        // the edge-click extension.
-        if (isOutpaintMode(node)) return;
+        // Outpaint mode: near an edge the click handler owns the extension;
+        // in the interior, a drag paints the PROTECT brush (areas the
+        // overlap band must leave frozen).
+        if (isOutpaintMode(node)) {
+            if (node._AngeloOutpaintHoverDir) return;  // edge-click = extend
+            const pp = eventToImagePixel(event);
+            if (!pp) return;
+            try {
+                canvas.setPointerCapture(event.pointerId);
+                node._AngeloPointerId = event.pointerId;
+            } catch (e) { /* noop */ }
+            node._AngeloOutpaintPainting = true;
+            node._AngeloProtect = node._AngeloProtect || [];
+            node._AngeloProtect.push([pp.pixelX, pp.pixelY, _brushRadius(node)]);
+            redrawCanvasWithOverlays(node);
+            return;
+        }
         // Smart Guided Inpaint has no canvas interaction at all — the
         // location comes from the dropdown, the run from the button.
         if (isSmartGuidedInpaintMode(node)) return;
@@ -1807,14 +1858,28 @@ function attachPreviewCanvas(node) {
         redrawCanvasWithOverlays(node);
     }
 
+    function endOutpaintProtect() {
+        if (!node._AngeloOutpaintPainting) return;
+        node._AngeloOutpaintPainting = false;
+        if (node._AngeloPointerId !== undefined) {
+            try { canvas.releasePointerCapture(node._AngeloPointerId); }
+            catch (e) { /* already released */ }
+            node._AngeloPointerId = undefined;
+        }
+        syncOutpaintControls(node);   // refresh the Clear-protect chip count
+        redrawCanvasWithOverlays(node);
+    }
+
     canvas.addEventListener("pointerup", (event) => {
         if (event.button !== 0) return;
-        if (node._AngeloTouchup) endTouchup();
+        if (node._AngeloOutpaintPainting) endOutpaintProtect();
+        else if (node._AngeloTouchup) endTouchup();
         else if (node._AngeloDraggingRect) endRectDrag();
         else endPaintStroke(event);
     });
     canvas.addEventListener("pointercancel", (event) => {
-        if (node._AngeloTouchup) endTouchup();
+        if (node._AngeloOutpaintPainting) endOutpaintProtect();
+        else if (node._AngeloTouchup) endTouchup();
         else if (node._AngeloDraggingRect) endRectDrag();
         else endPaintStroke(event);
     });
@@ -2583,6 +2648,34 @@ function redrawCanvasWithOverlays(node) {
             ctx.shadowBlur = 6;
             ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
             ctx.fillText(`${glyph} +${amt}px`, x + w / 2, y + h / 2);
+            ctx.restore();
+        }
+        // Protect-brush overlay: painted circles in red (these stay frozen
+        // inside the overlap band), plus a red brush ring at the cursor
+        // while it's in the interior (i.e. when a drag would paint).
+        const prot = node._AngeloProtect;
+        if (prot && prot.length) {
+            ctx.save();
+            ctx.fillStyle = "rgba(255, 90, 90, 0.30)";
+            for (const [px2, py2, pr2] of prot) {
+                ctx.beginPath();
+                ctx.arc(px2, py2, pr2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+        if (!dir && node._AngeloHover && node._AngeloImg) {
+            const rect2 = canvas.getBoundingClientRect();
+            const sx = rect2.width > 0 ? canvas.width / rect2.width : 1;
+            const sy = rect2.height > 0 ? canvas.height / rect2.height : 1;
+            const radiusW = findWidget(node, "click_radius");
+            ctx.save();
+            ctx.strokeStyle = "rgba(255, 90, 90, 0.8)";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(node._AngeloHover.x * sx, node._AngeloHover.y * sy,
+                (radiusW && radiusW.value) || 96, 0, Math.PI * 2);
+            ctx.stroke();
             ctx.restore();
         }
         return;
@@ -3771,6 +3864,14 @@ function triggerOutpaint(node, dir) {
     }
     setWidget(wd, dir);
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
+    // Ship the current protect circles (kept client-side so they survive
+    // Try-again retries without re-painting).
+    const wpr = findWidget(node, "outpaint_protect");
+    if (wpr) {
+        const prot = (node._AngeloProtect || []).map(
+            (c) => [Math.round(c[0]), Math.round(c[1]), Math.round(c[2])]);
+        setWidget(wpr, prot.length ? JSON.stringify(prot) : "");
+    }
     const amtW = findWidget(node, "outpaint_amount");
     const amt = (amtW && amtW.value) || 256;
     const dirLabel = { left: "left", right: "right", up: "up", down: "down", all: "all sides" }[dir] || dir;
@@ -3799,6 +3900,11 @@ function triggerOutpaintAccept(node) {
     const ws = findWidget(node, "outpaint_accept_seq");
     if (!ws) return;
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
+    // The protect circles were drawn on the OLD canvas — stale coords now.
+    node._AngeloProtect = [];
+    const wpr = findWidget(node, "outpaint_protect");
+    if (wpr) setWidget(wpr, "");
+    syncOutpaintControls(node);
     _angeloToast("Committing the new canvas — this is your new base");
     dbg("queue outpaint accept", { outpaint_accept_seq: ws.value });
     queuePrompt();
@@ -3837,7 +3943,7 @@ function _outpaintEdgeDir(node, p) {
     return cands[0][0];
 }
 
-// Outpaint row visibility + input mirrors.
+// Outpaint row visibility + input mirrors + protect-chip state.
 function syncOutpaintControls(node) {
     const row = node._AngeloOutpaintRow;
     if (row) {
@@ -3846,8 +3952,22 @@ function syncOutpaintControls(node) {
     }
     _syncNumberInput(node._AngeloOutpaintAmountInput, findWidget(node, "outpaint_amount")?.value);
     _syncNumberInput(node._AngeloOutpaintOverlapInput, findWidget(node, "outpaint_overlap")?.value);
+    const chip = node._AngeloOutpaintClearProtectBtn;
+    if (chip) {
+        const n = (node._AngeloProtect || []).length;
+        chip.style.display = n ? "" : "none";
+        chip.textContent = `✕ Protect (${n})`;
+    }
     if (!isOutpaintMode(node)) {
         node._AngeloOutpaintHoverDir = null;
+        node._AngeloOutpaintPainting = false;
+        // Leaving the mode drops the protect region — the canvas may be
+        // edited before the user comes back, making the coords stale.
+        if (node._AngeloProtect && node._AngeloProtect.length) {
+            node._AngeloProtect = [];
+            const wpr = findWidget(node, "outpaint_protect");
+            if (wpr) setWidget(wpr, "");
+        }
         hideOutpaintReview(node);
     }
 }
@@ -4097,9 +4217,10 @@ function syncSmartInpaintLockedWidgets(node) {
         "_AngeloFineUpscaleToggle",
         "_AngeloPaintModeToggle",
         "_AngeloRestoreToggle",
-        "_AngeloClickRadiusInput",
         "_AngeloCtxPadInput",
     ], anySmart || outp);
+    // Click R stays LIVE in Outpaint — it's the protect-brush size there.
+    _dimControls(node, ["_AngeloClickRadiusInput"], anySmart);
     _dimControls(node, ["_AngeloAreaPromptToggle"], anySmart);
 
     // Feather: live in Smart Inpaint (a soft edge can help blend the
@@ -4527,7 +4648,7 @@ function hideMechanicalWidgets(node) {
         "vary_seq", "vary_pick", "vary_pick_seq",
         // Outpaint — driven by the Outpaint row + edge-click + review overlay
         "outpaint_seq", "outpaint_dir", "outpaint_amount", "outpaint_overlap",
-        "outpaint_accept_seq",
+        "outpaint_accept_seq", "outpaint_protect",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
