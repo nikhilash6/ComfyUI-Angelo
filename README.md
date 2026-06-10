@@ -1,6 +1,6 @@
 # Angelo
 
-**A click-to-refine sampler for ComfyUI.** Generate an image, then click or paint on regions you want improved. Each click refines just that area while the rest stays bit-exact. One node replaces the standard `KSampler` + post-processing chain. Works with **FLUX 2 Klein 9B** and **Qwen-Image-Edit** as first-class edit models — plus any other sampler-compatible model (FLUX 1, SDXL, SD 1.5).
+**A click-to-edit sampler for ComfyUI.** Generate an image, then work it like a photo editor — click or paint to **refine** regions, drag rectangles or describe locations to **inpaint** new content, click an edge to **outpaint** the canvas wider, auto-**detect** subjects by naming them and **fix them all with one button**, pick the best of **four variations**, and **restore** anything an edit shouldn't have touched. Everything outside what you edit stays bit-exact. One node replaces the standard `KSampler` + ADetailer + MaskEditor + outpaint-pad chain. Works with **FLUX 2 Klein 9B** and **Qwen-Image-Edit** as first-class edit models — plus any other sampler-compatible model (FLUX 1, SDXL, SD 1.5).
 
 <a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
 
@@ -28,32 +28,42 @@
                                  image · latent · source_image outputs
 ```
 
-That's the entire workflow. No KSampler upstream, no ADetailer downstream, no Image-to-Mask plumbing in between. Generate, click, done. The image always scales to fit the node — resize the node and the preview tracks it.
+That's the entire workflow. No KSampler upstream, no ADetailer downstream, no Image-to-Mask plumbing or outpaint-pad chains in between. Generate, click, done. The image always scales to fit the node — resize the node and the preview tracks it.
 
 ![Angelo wired into a graph](screenshots/workflow-overview.png)
 
 ## Why you'd want it
 
-ComfyUI's standard "fix the bad hand" workflow is: generate, save the image, open MaskEditor, paint a mask, route the mask + image + a new sampler config back into the graph, re-queue. It works but it's friction-heavy.
+ComfyUI's standard "fix the bad hand" workflow is: generate, save the image, open MaskEditor, paint a mask, route the mask + image + a new sampler config back into the graph, re-queue. Want to extend the canvas too? That's another pad node, another mask, another sampler. It works, but it's friction-heavy.
 
-Angelo collapses that into:
+Angelo collapses all of it into one node:
+
+**Refine — fix what's there**
 
 - **Click** a region. It refines with your main prompt, in place, immediately.
-- **Load Image** to edit an existing photo directly in the node — no Empty Latent + `VAEEncode` chain to wire (you still connect the `vae` input as normal; Angelo does the encode itself). Or just **drag-drop an image file** onto the node; **right-click** the preview to copy it or open it in a new tab.
 - **Paint** a freeform stroke with mouse-down + drag. Same thing but custom shape.
-- **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed.
+- **Type an Area Prompt** right in the node to refine a region with a different prompt (e.g. main prompt = "person in forest", area prompt = "detailed photorealistic face") — no second CLIP Text Encode node needed. **Six Prompt Slots** keep your presets one click away.
 - **Toggle Xtra-Fine** to refine small regions at much higher effective resolution (the ADetailer move, but with full prompt control).
+
+**Add & extend — put new things in, grow the frame**
+
 - **Smart Inpaint** — drag a rectangle and add brand-new content with an edit model (FLUX 2 Klein 9B or Qwen-Image-Edit).
 - **Smart Guided Inpaint** — no drawing at all: pick a location from a dropdown ("top left", "center", …) + describe what to add, and the edit model places it.
+- **Outpaint** — click near an edge of the preview and the canvas extends that way (or arrows / extend-all for a zoom-out). Anti-duplication smarts built in — continue-the-scene instructions, edge-band references, and a **protect brush** to keep subjects near the frame edge out of the seam. Every result is reviewed before it commits: Accept, re-roll it, or walk away free.
+
+**Automate — let Angelo do the clicking**
+
 - **Detect** a region by *describing* it (optional SAM 3) — type "the face", click the highlight, and it masks the silhouette for you. No painting. Nudge the mask in/out, or Shift/Alt-drag to touch it up by hand.
 - **⚡ Fix All** — detect "face" in a group shot, hit one button, and Angelo works through *every* face automatically — each at Xtra-Fine quality with your Area Prompt, each individually undoable. ADetailer's pitch, but visible, stoppable, and prompt-controlled.
-- **Outpaint** — click near an edge of the preview to extend the canvas that way (or use arrows / extend-all for a zoom-out). Every result is reviewed before it commits — Accept, re-roll it, or walk away free.
 - **Vary ×4** — re-roll with four dice: generate four variations of your last edit at once and click your favourite from a 2×2 chooser. Nothing commits until you pick.
+
+**Stay in control — a real editor's safety net**
+
 - **Re-roll** the last edit with a fresh seed on the same mask + original image, or **toggle Persistent Mask** to keep evolving a region over repeated Queues.
 - **Restore brush** — toggle Restore and paint to heal a region back to the *original* image, instantly (no sampling). The Lightroom "erase part of an edit" gesture: refine a spacesuit, then brush the face inside the helmet back to how it was.
 - **Hold `\`** over the preview for an instant before/after flash of the original base (Lightroom's compare key).
-- **Six Prompt Slots** on the Area Prompt box — preset "mushrooms" / "bones" / "spacesuit" once, then just click a number and paint.
 - **Undo / Redo** to step back and forward through your refines.
+- **Load Image** to edit an existing photo directly in the node — no Empty Latent + `VAEEncode` chain to wire (you still connect the `vae` input as normal; Angelo does the encode itself). Or just **drag-drop an image file** onto the node; **right-click** the preview to copy it or open it in a new tab.
 - **`source_image` output** emits the original pre-edit base, ready to wire straight into a compare node.
 
 All in one node. All without re-queueing the whole workflow manually for each fix.
@@ -64,7 +74,7 @@ Angelo treats **FLUX 2 Klein 9B** and **Qwen-Image-Edit** as its two first-class
 
 Two latent layouts are handled transparently. **Standard 4D models** (FLUX, SDXL, SD) use `[B, C, H, W]` latents. **Temporal / video-derived models** (Qwen Image Edit, Wan) use 5D `[B, C, T, H, W]` latents — their VAEs carry an extra frame axis. Angelo normalises latent shape at a single VAE boundary and feeds each model the dimensionality it expects before sampling (the same step ComfyUI's stock KSampler does), so you don't need a model-specific latent node — wire `model`, `vae`, and `clip` as usual.
 
-For the **Smart** inpaint modes, use an **edit-trained** checkpoint — **FLUX 2 Klein 9B** or **Qwen-Image-Edit** (not plain Qwen-Image, which has the reference code path but isn't trained for it; see [Inpainting Mode](#inpainting-mode-refine--smart-inpaint--smart-guided-inpaint)). **Refine** (incl. Xtra-Fine and Area Prompt) works on any model.
+For the **Smart** inpaint modes, use an **edit-trained** checkpoint — **FLUX 2 Klein 9B** or **Qwen-Image-Edit** (not plain Qwen-Image, which has the reference code path but isn't trained for it; see [Inpainting Mode](#inpainting-mode-refine--smart-inpaint--smart-guided-inpaint)). **Refine** (incl. Xtra-Fine and Area Prompt) works on any model. **Outpaint** works on any model too, but is *best* on the edit models — they get an edge-band reference and follow the continue-the-scene instruction, which is what keeps extensions in-style and subjects un-duplicated.
 
 ## Install
 
