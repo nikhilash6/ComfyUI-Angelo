@@ -981,10 +981,23 @@ def _tiled_restore_pass(
     out = torch.zeros_like(big_pixels)
     wsum = torch.zeros((1, new_H, new_W, 1), dtype=big_pixels.dtype, device=big_pixels.device)
 
+    # ONE global noise field, cropped per tile. This is the anti-ghosting
+    # measure: neighbouring tiles see IDENTICAL init noise (and identical
+    # reference content) in their shared overlap, so at denoise 1.0 their
+    # trajectories converge on essentially the same fine detail there —
+    # the blend averages two near-identical renderings instead of two
+    # independently-imagined ones (decorrelated per-tile seeds produced
+    # "double eyelash" ghosting at seams). Deterministic samplers (euler,
+    # the default) get the full benefit; ancestral samplers re-noise per
+    # step in tile-local coordinates, so some residual seam softness is
+    # expected there.
+    global_noise = comfy.sample.prepare_noise(big_latent, seed, None)
+
     def _ramp(length_px: int, ov_px: int, device):
         r = torch.ones(length_px, dtype=torch.float32, device=device)
         n = min(ov_px, length_px)
         fade = (torch.arange(n, dtype=torch.float32, device=device) + 1.0) / (n + 1.0)
+        fade = fade * fade * (3.0 - 2.0 * fade)   # smoothstep — softer crossover
         r[:n] = torch.minimum(r[:n], fade)
         r[-n:] = torch.minimum(r[-n:], fade.flip(0))
         return r
@@ -996,8 +1009,8 @@ def _tiled_restore_pass(
             th = min(tile_ly, nlh - y0)
             tile_lat = big_latent[..., y0:y0 + th, x0:x0 + tw].clone().contiguous()
             tile_pos = _apply_reference(positive_base, tile_lat.clone(), _QUICK_REFINE_REF)
-            tile_seed = (seed + idx * 1000003) & 0xFFFFFFFFFFFFFFFF
-            noise = comfy.sample.prepare_noise(tile_lat, tile_seed, None)
+            tile_seed = int(seed)
+            noise = global_noise[..., y0:y0 + th, x0:x0 + tw].clone().contiguous()
             refined = _do_sample(
                 guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
                 model=model, noise=noise,
