@@ -378,6 +378,8 @@ Controls on the Outpaint row:
 
 Use the Area Prompt to describe the *continuation* ("empty coastal road, sea, sky"), never the subject.
 
+**Instruction order + live prompt preview.** With Area Prompt on in Outpaint mode, an **Order** selector and a **Final prompt** preview appear under the text box. *Instruction first* (default) puts Angelo's extend-the-scene instruction ahead of your text; *My text first* flips it — worth trying when a model leans too hard on the instruction and under-weights your description (many models weight the start of a prompt more heavily). The preview shows the **exact combined prompt** the next extension will encode, live as you type, flip the order, or pick a direction — no guessing what's actually being sent.
+
 Notes:
 
 - On **FLUX 2 Klein / Qwen-Image-Edit**, the **edge-adjacent band** (~512px) of the existing image is injected as a reference — the texture and lighting to continue, without re-showing the model your subject (whole-image references invite edit models to reproduce the subject into the strip). ⛶ All uses the whole image, since everything borders the new space. Non-edit models ignore the reference and rely on the seam context — standard high-denoise fill.
