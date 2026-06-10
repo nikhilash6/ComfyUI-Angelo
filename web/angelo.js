@@ -594,7 +594,7 @@ function attachPreviewCanvas(node) {
 
     const quickFixBtn = makeActionButton("✨ Quick Photo Refine", () => triggerQuickPhotoRefine(node), "quickfix");
     quickFixBtn.title = "One-click photo restoration — a true magic button with its own fixed "
-        + "recipe: whole image, prompt \"high quality photo\", denoise 0.8, reference anchor 0.8. "
+        + "recipe: whole image, prompt \"high quality photo\", denoise 1.0, reference anchor 0.8. "
         + "Identity stays, texture re-renders. NO toolbar box affects it — Denoise, Reference, "
         + "Area Prompt, toggles: all ignored. Only the Seed applies (leave Ctrl on randomize and "
         + "mash the button for variations); Undo steps back through passes.\n\n"
@@ -3982,7 +3982,7 @@ function triggerQuickPhotoRefine(node) {
     const ws = findWidget(node, "quick_refine_seq");
     if (!ws) return;
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    _angeloToast("✨ Quick Photo Refine — restoring (denoise 0.8, reference 0.8)…");
+    _angeloToast("✨ Quick Photo Refine — restoring (denoise 1.0, reference 0.8)…");
     dbg("queue quick photo refine", { quick_refine_seq: ws.value });
     queuePrompt();
 }
