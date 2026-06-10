@@ -877,6 +877,10 @@ function attachPreviewCanvas(node) {
         + "content as a reference, feathered seams.\n\n"
         + "Review overlay before anything commits — Accept = NEW session base (history resets, like "
         + "Outpaint). After accepting: Xtra-Fine for spot edits; ✨ auto-tiles on big canvases.\n\n"
+        + "Finishes with an automatic FACE POLISH (needs the optional SAM 3 Detect install): every "
+        + "face from 250px up to 1MP gets a centred circular refine at ref 0.3 / denoise 0.55 — "
+        + "full-canvas context on small canvases, Xtra-Fine crops above 1.6MP. Skipped silently "
+        + "without SAM 3.\n\n"
         + "Edit models + CLIP; Refine mode only.";
     quickRow.appendChild(upscaleBtn);
     node._AngeloUpscaleBtn = upscaleBtn;
@@ -886,7 +890,9 @@ function attachPreviewCanvas(node) {
         + "restoration pre-pass. For images that are already clean (fresh generations, good "
         + "photos) and just need size + crispness: 2× pixel upscale, then a \"high quality "
         + "photo\" pass per ~1MP tile with feathered seams. Same review-before-commit flow as "
-        + "2× Restore. Edit models + CLIP; Refine mode only.";
+        + "2× Restore, including the automatic FACE POLISH finishing stage (faces 250px–1MP get a "
+        + "circular refine; needs the optional SAM 3 install, skipped silently without it). "
+        + "Edit models + CLIP; Refine mode only.";
     quickRow.appendChild(upscalePlainBtn);
     node._AngeloUpscalePlainBtn = upscalePlainBtn;
 

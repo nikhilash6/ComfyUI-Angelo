@@ -320,6 +320,8 @@ Why Reference matters: in plain Refine, the subject's identity lives entirely in
 
 These live on the **✦ Quick Actions bar** above the Detect row, alongside ✨ Quick Photo Refine — the one-press buttons, kept apart from the per-edit toggles.
 
+**Automatic face polish.** Both upscale buttons finish with a face pass (when the optional [SAM 3 Detect](#detect--auto-segment-with-sam-3-optional) is installed — skipped silently otherwise): SAM finds every face in the result, and each one **between 250px and ~1MP** gets a centred, feathered circular refine at ref 0.3 / denoise 0.55 with the tile prompt. Smaller faces don't have the pixels to benefit; bigger ones already have all the resolution they need. Context follows canvas size — at ≤1.6MP the stamp samples the full canvas so the model sees the whole image; above that it uses the Xtra-Fine crop path with a 64px context pad, so a 4MP canvas is never sampled whole per face. The polish lands *before* the review overlay, so what you Accept is the finished article, and Try-again re-rolls polish included. The console reports the count (`[Angelo face-polish] 2 face(s)…`).
+
 **Working at 4MP+ after an upscale.** Angelo never *samples* a latent beyond ~1MP — during the upscale (tiles) and afterwards: **✨ Quick Photo Refine auto-tiles** on canvases over ~1.6MP, and **Xtra-Fine crops**, so it's fast at any canvas size and is the right tool for spot edits on an upscaled image. Plain whole-canvas refines (a giant brush stroke with Xtra-Fine off) *do* sample the full latent — expect them to be slow and softer at 4MP, and reach for Xtra-Fine instead.
 
 The fine print:
