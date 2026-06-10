@@ -826,8 +826,9 @@ def _refine_with_fine_upscaling(
 # box. The whole canvas is re-rendered with this prompt, anchored to the
 # current image via reference_latents — identity from the reference,
 # texture from the re-render. Tested values; tuned here in ONE place.
-# (Simple beats clever on the prompt: a longer keep-the-colours
-# constraint was tried and removed — see git history.)
+# The short colour/lighting constraint earned its spot empirically at
+# THESE denoise/ref settings (a wordier version failed earlier at
+# different settings — phrasing and operating point interact).
 _QUICK_REFINE_PROMPT = "high quality photo. do not change colouring, do not change lighting."
 _QUICK_REFINE_DENOISE = 0.75
 _QUICK_REFINE_REF = 0.9
