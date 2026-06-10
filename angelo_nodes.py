@@ -861,48 +861,7 @@ def _tile_min_overlap_px(canvas_long_edge: int) -> int:
     return max(_TILE_OVERLAP_PX, 88 + round(canvas_long_edge / 46.0))
 _QUICK_REFINE_TILE_THRESHOLD_MP = 1.6
 
-# 2× Restore Upscale is TWO-STAGE: restoration is a GLOBAL judgement
-# (dust/fading/casts need one consistent interpretation), so stage 1
-# runs the model-tuned restore instruction at native resolution first;
-# stage 2 then upscales the clean image and the tiles do the only job
-# tiles are good at — rendering known-good content crisply at the new
-# resolution — under this enhancement prompt (both model families).
-_UPSCALE_TILE_PROMPT = "keep the colours, keep the style and restore the image."
-# The upscalers say "image", not "photo" — they serve generations as much
-# as photographs (✨ Quick Photo Refine keeps its photo-specific wording).
-_UPSCALE_RESTORE_PROMPT = "restore the image"
-_UPSCALE_RESTORE_PROMPT_QWEN = ("lightly restore this old image, remove dust and scratches, "
-                                "improve sharpness and contrast, preserve original feel")
-# The upscale tile pass runs img2img-style: tiles start FROM the upscaled
-# image (denoise 0.55) and sharpen it rather than re-imagining it, with a
-# light anchor (ref 0.3 — fractional, so the dual-cond blend applies: two
-# positive evals per tile step). Restore passes keep the full 1.0/1.0
-# recipe — these numbers are for adding crispness, not repairing.
-_UPSCALE_TILE_REF = 0.1
-_UPSCALE_TILE_DENOISE = 0.35
 
-# Face polish: the automatic finishing stage of both upscale buttons.
-# SAM 3 (the optional Detect dependency) finds faces in the upscaled
-# result IN-PROCESS — no UI detect flow — and each face in the size
-# window gets a centred circular refine stamp. Faces below the MIN
-# don't have enough pixels to be worth a pass; faces above the MAX
-# already have all the resolution they need (and stamping a huge,
-# attention-grabbing region risks visible change). Skipped silently
-# (with a console line) when SAM 3 isn't installed.
-_FACE_POLISH_MIN_PX = 250        # min bbox edge, px
-_FACE_POLISH_MAX_MP = 1.0        # max bbox area, megapixels
-# Per-flavour face-polish numbers. 2x RESTORE holds the face much closer
-# to the original (strong anchor — a restoration must not change who the
-# person is) while still re-rendering enough texture; 2x UPSCALE is freer
-# (clean sources, the face just needs crispness like everything else).
-_FACE_POLISH_REF = 0.3            # 2x Upscale (plain)
-_FACE_POLISH_DENOISE = 0.55
-_FACE_POLISH_RESTORE_REF = 0.75   # 2x Restore
-_FACE_POLISH_RESTORE_DENOISE = 0.7
-_FACE_POLISH_CTX_PAD = 64        # px context pad on the crop path
-_FACE_POLISH_CANVAS_MP = 1.6     # <= this: full-canvas context; above: Xtra-Fine crop
-_FACE_POLISH_CONF = 0.4
-_FACE_POLISH_MAX_FACES = 8
 
 
 def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
@@ -1086,153 +1045,6 @@ def _tiled_restore_pass(
     final_pixels = out / wsum.clamp(min=1e-6)
     final_latent = _vae_encode(vae, final_pixels)
     return final_latent, final_pixels, n_tiles
-
-
-def _face_polish_pass(
-    *,
-    model,
-    vae,
-    latent: torch.Tensor,
-    pixels: torch.Tensor,
-    positive_base,
-    negative,
-    seed: int,
-    steps: int,
-    cfg: float,
-    sampler_name: str,
-    scheduler: str,
-    callback,
-    disable_pbar: bool,
-    ov_guider=None,
-    ov_sampler=None,
-    ov_sigmas=None,
-    face_ref: float = _FACE_POLISH_REF,
-    face_denoise: float = _FACE_POLISH_DENOISE,
-) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """Automatic face polish on an upscaled result: SAM 3 (called
-    in-process, not via the UI detect flow) finds faces; each face whose
-    bbox edge exceeds _FACE_POLISH_MIN_PX and whose area is under
-    _FACE_POLISH_MAX_MP gets a centred, feathered circular refine stamp
-    at _FACE_POLISH_REF / _FACE_POLISH_DENOISE.
-
-    Context strategy follows canvas size: at or below
-    _FACE_POLISH_CANVAS_MP the stamp samples the FULL canvas (the model
-    sees the whole image as context — affordable at that size); above
-    it, the Xtra-Fine crop path runs with _FACE_POLISH_CTX_PAD padding
-    so a 4MP canvas is never sampled whole per face. (The crop path's
-    MP target is nudged just above the crop's own area so the
-    no-upscale whole-canvas shortcut can never trigger.)
-
-    Never raises: any failure (SAM not installed, weights missing,
-    detection error) prints a console line and returns the input
-    unchanged. Returns (latent, pixels, n_polished)."""
-    try:
-        try:
-            from . import angelo_segment
-        except ImportError:
-            import angelo_segment
-
-        from PIL import Image
-        arr = (pixels[0].detach().cpu().float().clamp(0.0, 1.0).numpy() * 255.0).astype("uint8")
-        pil = Image.fromarray(arr)
-        try:
-            res = angelo_segment.detect_text(pil, "face", _FACE_POLISH_CONF, 20)
-        except RuntimeError as e:
-            print(f"[Angelo face-polish] skipped — {e}")
-            return latent, pixels, 0
-        dets = res.get("detections", []) if isinstance(res, dict) else []
-
-        H_pix, W_pix = pixels.shape[1], pixels.shape[2]
-        canvas_mp = (W_pix * H_pix) / 1e6
-        faces = []
-        for d in dets:
-            x1, y1, x2, y2 = d.get("bbox", [0, 0, 0, 0])
-            w, h = max(0.0, x2 - x1), max(0.0, y2 - y1)
-            if max(w, h) < _FACE_POLISH_MIN_PX:
-                continue
-            if (w * h) / 1e6 > _FACE_POLISH_MAX_MP:
-                continue
-            faces.append((x1, y1, x2, y2))
-            if len(faces) >= _FACE_POLISH_MAX_FACES:
-                break
-        if not faces:
-            print("[Angelo face-polish] no faces in the size window — nothing to do")
-            return latent, pixels, 0
-        ctx = "full-canvas context" if canvas_mp <= _FACE_POLISH_CANVAS_MP else "Xtra-Fine crops"
-        print(f"[Angelo face-polish] {len(faces)} face(s) in the "
-              f"{_FACE_POLISH_MIN_PX}px-{_FACE_POLISH_MAX_MP}MP window "
-              f"(canvas {canvas_mp:.1f}MP — {ctx})")
-
-        cur_lat, cur_px = latent, pixels
-        px_dirty = False
-        nlh, nlw = cur_lat.shape[-2], cur_lat.shape[-1]
-        scale_x = nlw / W_pix
-        scale_y = nlh / H_pix
-        scale_geom = math.sqrt(scale_x * scale_y)
-
-        for i, (x1, y1, x2, y2) in enumerate(faces):
-            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-            r_px = max(x2 - x1, y2 - y1) / 2.0 * 1.15   # circle just past the bbox
-            mask = _circle_mask_latent_direct(
-                nlh, nlw, cx * scale_x, cy * scale_y,
-                max(1.0, r_px * scale_geom), cur_lat.device,
-            )
-            sigma = max(0.5, (r_px / 4.0) * scale_geom)
-            mask = _gaussian_blur_2d(mask, sigma).clamp(0.0, 1.0)
-            f_seed = (seed + 31337 + i * 1000003) & 0xFFFFFFFFFFFFFFFF
-
-            if canvas_mp <= _FACE_POLISH_CANVAS_MP:
-                pos = _apply_reference(positive_base, cur_lat.clone(), face_ref)
-                noise = comfy.sample.prepare_noise(cur_lat, f_seed, None)
-                cur_lat = _do_sample(
-                    guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
-                    model=model, noise=noise,
-                    steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
-                    positive=pos, negative=negative,
-                    source_latent=cur_lat,
-                    denoise=face_denoise,
-                    noise_mask=mask,
-                    callback=callback,
-                    disable_pbar=disable_pbar,
-                    seed=f_seed,
-                )
-                px_dirty = True
-            else:
-                # Context pad proportional to the face — a fixed 64px is
-                # meaningful context for a 300px face and almost none for
-                # an 800px one. A quarter of the bbox edge scales the
-                # surroundings the model sees with the subject.
-                pad = max(_FACE_POLISH_CTX_PAD, round(0.25 * max(x2 - x1, y2 - y1)))
-                crop_mp = max(0.05, ((x2 - x1 + 2 * pad) * (y2 - y1 + 2 * pad)) / 1e6)
-                cur_lat, fresh_px = _refine_with_fine_upscaling(
-                    model=model, vae=vae, current=cur_lat,
-                    current_pixels=(None if px_dirty else cur_px), mask=mask,
-                    scale_x=scale_x, scale_y=scale_y,
-                    target_mp=max(1.0, crop_mp * 1.02),  # keep scale > 1 -> crop path
-                    max_linear=8.0, resize_method="lanczos",
-                    context_pad_pixel=pad,
-                    inpainting_mode="Refine",
-                    reference_strength=face_ref,
-                    seed=f_seed, steps=steps, cfg=cfg,
-                    sampler_name=sampler_name, scheduler=scheduler,
-                    positive=positive_base, negative=negative,
-                    denoise=face_denoise,
-                    callback=callback, disable_pbar=disable_pbar,
-                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
-                )
-                if fresh_px is not None:
-                    cur_px, px_dirty = fresh_px, False
-                else:
-                    px_dirty = True
-
-        if px_dirty:
-            cur_px = _vae_decode(vae, cur_lat)
-        return cur_lat, cur_px, len(faces)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"[Angelo face-polish] failed ({e}) — continuing with the unpolished result")
-        return latent, pixels, 0
 
 
 # Direction-aware instruction prepended to the outpaint conditioning when a
@@ -1912,29 +1724,14 @@ class AngeloRefine:
                                                             "off, 1 = fully anchored. Set via the "
                                                             "Ref box on the toolbar."}),
 
-                # 2× Restore Upscale: the ⬆ button bumps this. Pixel-space
-                # 2× lanczos + re-encode, then the tiled restore engine
-                # (_tiled_restore_pass) over overlapping ~1MP tiles. Result
-                # is STASHED for review (reuses the outpaint pending-base
-                # flow — Accept installs it as a fresh session base, since
-                # the dimensions changed). Declared LAST.
+                # ⬆ 2× Pixel: the button bumps this. A PURE pixel-space
+                # lanczos 2× + re-encode — no AI, deterministic — committed
+                # directly as a fresh session base (dimension change =
+                # Load-Image semantics, history resets). The AI step is the
+                # user's next move (e.g. ✨, which auto-tiles when large).
                 "upscale_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
 
-                # Which upscale flavour the JS requested: "restore" = the
-                # two-stage pipeline (global restore, then tiled quality
-                # pass); "plain" = stage 2 only — for images that are
-                # already clean and just need size + crispness.
-                "upscale_mode": ("STRING", {"default": "restore", "multiline": False}),
 
-                # Faces toggle on the Quick Actions bar: whether the upscale
-                # buttons finish with the automatic face-polish stage.
-                # Defaults ON; the toggle exists so the final pass can be
-                # removed when it isn't wanted. Declared LAST.
-                "face_polish": ("BOOLEAN", {"default": True,
-                                            "tooltip": "Run the automatic face-polish stage at "
-                                                       "the end of the 2x upscale buttons. "
-                                                       "Toggled via the Faces button on the "
-                                                       "Quick Actions bar."}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -2043,8 +1840,6 @@ class AngeloRefine:
         quick_refine_seq=0,
         reference_strength=0.0,
         upscale_seq=0,
-        upscale_mode="restore",
-        face_polish=True,
         latent=None,
         clip=None,
         overrides=None,
@@ -2631,11 +2426,12 @@ class AngeloRefine:
             current = qr_refined
             current_pixels = qr_pixels
 
-        # ===== 2× Restore Upscale: tiled, reference-anchored upscaling =====
-        # Pixel 2× + re-encode, then the tiled restore engine. The result
-        # changes the canvas DIMENSIONS, so it goes through the same
-        # review/accept flow as Outpaint: stash + overlay, Accept installs
-        # it as a fresh session base (history resets), Cancel costs nothing.
+        # ===== ⬆ 2× Pixel: pure pixel-space upscale (no AI) =====
+        # Lanczos 2× of the decoded canvas, re-encoded, committed DIRECTLY
+        # as a fresh session base — dimension change = Load-Image semantics
+        # (history resets). Deterministic, so no review step. The AI
+        # enhancement is the user's next, separate move — e.g. ✨ Quick
+        # Photo Refine, which auto-tiles on the now-large canvas.
         new_upscale = (
             inpainting_mode == "Refine"
             and upscale_seq > 0
@@ -2643,84 +2439,36 @@ class AngeloRefine:
         )
         state["upscale_seq"] = upscale_seq
         if new_upscale:
-            up_seed = int(seed)
-            callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
-            disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
-            # ----- Stage 1: GLOBAL restoration at native resolution -----
-            # The model-tuned restore instruction, whole-image context (the
-            # tiled engine at scale 1.0 degenerates to a single anchored
-            # pass when the canvas fits one tile). Repair first, with one
-            # consistent global judgement of the damage.
-            # "plain" mode (the 2x Upscale button) SKIPS this stage — for
-            # images that are already clean and just need size + crispness.
-            if str(upscale_mode) == "plain":
-                restored_lat, restored_px = current, current_pixels
-            else:
-                restore_prompt = (_UPSCALE_RESTORE_PROMPT_QWEN if current.dim() == 5
-                                  else _UPSCALE_RESTORE_PROMPT)
-                if clip is not None:
-                    tokens_r = clip.tokenize(restore_prompt)
-                    restore_base = clip.encode_from_tokens_scheduled(tokens_r)
-                else:
-                    restore_base = positive
-                print("[Angelo 2x-restore] stage 1: global restoration at native resolution")
-                restored_lat, restored_px, _n1 = _tiled_restore_pass(
-                    model=model, vae=vae,
-                    current=current, current_pixels=current_pixels,
-                    scale=1.0,
-                    positive_base=restore_base, negative=negative,
-                    seed=up_seed, steps=steps, cfg=cfg,
-                    sampler_name=sampler_name, scheduler=scheduler,
-                    callback=callback, disable_pbar=disable_pbar,
-                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
-                )
-            # ----- Stage 2: 2× upscale + per-tile quality pass -----
-            # The image is clean now; the tiles' only job is rendering it
-            # crisply at the new resolution (enhancement, not restoration).
-            if clip is not None:
-                tokens_u = clip.tokenize(_UPSCALE_TILE_PROMPT)
-                up_base = clip.encode_from_tokens_scheduled(tokens_u)
-            else:
-                up_base = positive
-            print(f"[Angelo 2x-restore] stage 2: 2x upscale + tiled quality pass "
-                  f"(ref={_UPSCALE_TILE_REF}, denoise={_UPSCALE_TILE_DENOISE})")
-            up_latent, up_pixels, _n2 = _tiled_restore_pass(
-                model=model, vae=vae,
-                current=restored_lat, current_pixels=restored_px,
-                scale=2.0,
-                positive_base=up_base, negative=negative,
-                seed=(up_seed + 777) & 0xFFFFFFFFFFFFFFFF, steps=steps, cfg=cfg,
-                sampler_name=sampler_name, scheduler=scheduler,
-                callback=callback, disable_pbar=disable_pbar,
-                ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
-                tile_ref=_UPSCALE_TILE_REF, tile_denoise=_UPSCALE_TILE_DENOISE,
-            )
-            # ----- Stage 3: automatic face polish (needs SAM 3) -----
-            # Restore mode anchors faces much harder than plain upscale —
-            # a restoration must not change who the person is. The Faces
-            # toggle on the Quick Actions bar can remove the stage entirely.
-            if bool(face_polish):
-                if str(upscale_mode) == "plain":
-                    _f_ref, _f_den = _FACE_POLISH_REF, _FACE_POLISH_DENOISE
-                else:
-                    _f_ref, _f_den = _FACE_POLISH_RESTORE_REF, _FACE_POLISH_RESTORE_DENOISE
-                up_latent, up_pixels, _nf = _face_polish_pass(
-                    model=model, vae=vae, latent=up_latent, pixels=up_pixels,
-                    positive_base=up_base, negative=negative,
-                    seed=up_seed, steps=steps, cfg=cfg,
-                    sampler_name=sampler_name, scheduler=scheduler,
-                    callback=callback, disable_pbar=disable_pbar,
-                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
-                    face_ref=_f_ref, face_denoise=_f_den,
-                )
-            else:
-                print("[Angelo face-polish] disabled via the Faces toggle")
-            previewer = comfy_nodes.PreviewImage()
-            ui_up = previewer.save_images(up_pixels, filename_prefix="Angelo_upscale")
-            state["outpaint_pending"] = (up_latent, up_pixels)
-            state["outpaint_preview_refs"] = ui_up["ui"]["images"]
-            state["click_seq"] = click_seq
-            state["refine_seed_at_run"] = up_seed
+            up_px_in = current_pixels if current_pixels is not None else _vae_decode(vae, current)
+            in_H, in_W = up_px_in.shape[1], up_px_in.shape[2]
+            out_W = max(16, int(round(in_W * 2.0 / 16.0)) * 16)
+            out_H = max(16, int(round(in_H * 2.0 / 16.0)) * 16)
+            up_chw = up_px_in.movedim(-1, 1)
+            up_chw = comfy.utils.common_upscale(up_chw, out_W, out_H, "lanczos", "disabled")
+            up_pixels = up_chw.movedim(1, -1).contiguous()
+            up_latent = _vae_encode(vae, up_pixels)
+            print(f"[Angelo 2x-pixel] {in_W}x{in_H} -> {out_W}x{out_H} (lanczos, no AI)")
+            _STATE[node_id] = {
+                "history": [(up_latent, up_pixels)],
+                "click_seq": click_seq,
+                "undo_seq": undo_seq,
+                "redo_seq": redo_seq,
+                "reroll_seq": reroll_seq,
+                "vary_seq": vary_seq,
+                "vary_pick_seq": vary_pick_seq,
+                "outpaint_seq": outpaint_seq,
+                "outpaint_accept_seq": outpaint_accept_seq,
+                "quick_refine_seq": quick_refine_seq,
+                "upscale_seq": upscale_seq,
+                "fingerprint": state.get("fingerprint"),
+                "loaded_seq": state.get("loaded_seq"),
+                "sampler_seed_at_run": state.get("sampler_seed_at_run"),
+                "refine_seed_at_run": state.get("refine_seed_at_run"),
+                "source_latent": up_latent,
+                "source_pixels": up_pixels,
+            }
+            state = _STATE[node_id]
+            current, current_pixels = up_latent, up_pixels
 
         # Has the user clicked since our last execution for this node?
         # Never treat a queue-hook click_seq bump as an edit in Outpaint

@@ -868,50 +868,15 @@ function attachPreviewCanvas(node) {
     quickRow.appendChild(quickFixBtn);
     node._AngeloQuickFixBtn = quickFixBtn;
 
-    const upscaleBtn = makeActionButton("⬆ 2× Restore", () => triggerRestoreUpscale(node, "restore"), "quickfix");
-    upscaleBtn.title = "2× Restore Upscale — TWO-STAGE creative upscaling for photos that need "
-        + "repair. Stage 1: the photo is RESTORED globally at native resolution (the model-tuned "
-        + "restore instruction, whole-image context — damage gets one consistent interpretation). "
-        + "Stage 2: the clean image is upscaled 2× in pixel space and refined tile by tile under a "
-        + "\"keep the colours, keep the style and restore the image\" prompt — overlapping ~1MP squares, each anchored to its own "
-        + "content as a reference, feathered seams.\n\n"
-        + "Review overlay before anything commits — Accept = NEW session base (history resets, like "
-        + "Outpaint). After accepting: Xtra-Fine for spot edits; ✨ auto-tiles on big canvases.\n\n"
-        + "Finishes with an automatic FACE POLISH (needs the optional SAM 3 Detect install): every "
-        + "face from 250px up to 1MP gets a centred circular refine at ref 0.75 / denoise 0.7 — "
-        + "anchored hard, because a restoration must not change who the person is. Full-canvas "
-        + "context on small canvases, Xtra-Fine crops above 1.6MP. Skipped silently without "
-        + "SAM 3.\n\n"
-        + "Edit models + CLIP; Refine mode only.";
+    const upscaleBtn = makeActionButton("⬆ 2× Pixel", () => triggerPixelUpscale(node), "quickfix");
+    upscaleBtn.title = "Pure pixel-space 2× upscale — lanczos, NO AI, deterministic. The image is "
+        + "decoded, enlarged 2×, re-encoded, and committed immediately as the session's new base "
+        + "(dimension change, so history resets — like loading a new photo). Nothing is invented "
+        + "or re-rendered.\n\n"
+        + "For AI enhancement afterwards, that's your next move: press ✨ Quick Photo Refine "
+        + "(auto-tiles on the now-large canvas), or spot-edit with Xtra-Fine.";
     quickRow.appendChild(upscaleBtn);
     node._AngeloUpscaleBtn = upscaleBtn;
-
-    const upscalePlainBtn = makeActionButton("⬆ 2× Upscale", () => triggerRestoreUpscale(node, "plain"), "quickfix");
-    upscalePlainBtn.title = "2× Upscale — the same tiled, reference-anchored upscale WITHOUT the "
-        + "restoration pre-pass. For images that are already clean (fresh generations, good "
-        + "photos) and just need size + crispness: 2× pixel upscale, then a keep-colours/style "
-        + "restore pass per tile with feathered seams. Same review-before-commit flow as "
-        + "2× Restore, including the automatic FACE POLISH finishing stage (faces 250px–1MP get a "
-        + "circular refine; needs the optional SAM 3 install, skipped silently without it). "
-        + "Edit models + CLIP; Refine mode only.";
-    quickRow.appendChild(upscalePlainBtn);
-    node._AngeloUpscalePlainBtn = upscalePlainBtn;
-
-    const facePolishToggle = makeToggleButton("Faces", () => {
-        const w = findWidget(node, "face_polish");
-        if (!w) return;
-        setWidget(w, !w.value);
-        syncFacePolishToggle(node);
-    });
-    facePolishToggle.title = "Final face refinement for the 2x upscale buttons (ON by default). "
-        + "After the upscale, SAM 3 finds every face between 250px and ~1MP and gives each a "
-        + "centred circular refine — anchored hard on 2x Restore (ref 0.75 / denoise 0.7, so a "
-        + "restoration never changes who the person is), freer on 2x Upscale (ref 0.3 / denoise "
-        + "0.55, just crispness). Turn OFF to skip the stage entirely — e.g. non-portrait work, "
-        + "or when you'd rather polish faces by hand with Detect + Fix All afterwards. "
-        + "Needs the optional SAM 3 install; without it the stage is skipped silently either way.";
-    quickRow.appendChild(facePolishToggle);
-    node._AngeloFacePolishToggle = facePolishToggle;
 
     // ===== OUTPAINT ROW: direction + amount (Outpaint mode only) =====
     // Arrows extend the canvas in that direction; "All" pads every side
@@ -4044,11 +4009,9 @@ function triggerQuickPhotoRefine(node) {
     queuePrompt();
 }
 
-// 2× Restore Upscale: tiled, reference-anchored creative upscaling. The
-// result is a dimension change, so it rides the same review/accept
-// (pending-base) flow as Outpaint — _AngeloPendingOp tells the shared
-// overlay which op "Try again" should re-fire.
-function triggerRestoreUpscale(node, mode) {
+// ⬆ 2× Pixel: pure lanczos upscale, no AI, committed directly as the new
+// session base (deterministic — no review step).
+function triggerPixelUpscale(node) {
     if (isAnySmartMode(node) || isOutpaintMode(node)) return;  // dimmed there anyway
     if (!node._AngeloImg) {
         _angeloToast("Generate or load an image first");
@@ -4056,14 +4019,9 @@ function triggerRestoreUpscale(node, mode) {
     }
     const ws = findWidget(node, "upscale_seq");
     if (!ws) return;
-    const wm = findWidget(node, "upscale_mode");
-    if (wm) setWidget(wm, mode === "plain" ? "plain" : "restore");
-    node._AngeloPendingOp = "upscale";
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    _angeloToast(mode === "plain"
-        ? "⬆ 2× Upscale — upscaling tile by tile…"
-        : "⬆ 2× Restore Upscale — stage 1: restoring… stage 2: upscaling tile by tile…");
-    dbg("queue restore upscale", { upscale_seq: ws.value, mode });
+    _angeloToast("⬆ 2× Pixel — lanczos upscale, new base (history resets)");
+    dbg("queue pixel upscale", { upscale_seq: ws.value });
     queuePrompt();
 }
 
@@ -4109,17 +4067,8 @@ function showOutpaintReview(node, ref) {
     const ov = node._AngeloOutpaintOverlay;
     const img = node._AngeloOutpaintImg;
     if (!ov || !img) return;
-    // Title follows the pending op — the overlay is shared between
-    // Outpaint and 2× Restore Upscale.
     if (node._AngeloOutpaintTitle) {
-        if (node._AngeloPendingOp === "upscale") {
-            const wm = findWidget(node, "upscale_mode");
-            node._AngeloOutpaintTitle.textContent = (wm && wm.value === "plain")
-                ? "2× Upscale — keep it?"
-                : "2× Restore Upscale — keep it?";
-        } else {
-            node._AngeloOutpaintTitle.textContent = "Outpaint preview — keep it?";
-        }
+        node._AngeloOutpaintTitle.textContent = "Outpaint preview — keep it?";
     }
     img.src = makeViewUrl(ref);
     ov.style.display = "flex";
@@ -4142,19 +4091,15 @@ function triggerOutpaintAccept(node) {
     const wpr = findWidget(node, "outpaint_protect");
     if (wpr) setWidget(wpr, "");
     syncOutpaintControls(node);
-    _angeloToast(node._AngeloPendingOp === "upscale"
-        ? "Committing the 2× canvas — use Xtra-Fine for spot edits at this size"
-        : "Committing the new canvas — this is your new base");
+    _angeloToast("Committing the new canvas — this is your new base");
     dbg("queue outpaint accept", { outpaint_accept_seq: ws.value });
     queuePrompt();
 }
 
-// Same operation, fresh seed. The stale stash is simply overwritten by
-// the new run. Dispatches on the pending op — the review overlay is
-// shared between Outpaint and 2× Restore Upscale.
+// Same direction + amount, fresh seed. The stale stash is simply
+// overwritten by the new run.
 function triggerOutpaintRetry(node) {
-    const seqName = node._AngeloPendingOp === "upscale" ? "upscale_seq" : "outpaint_seq";
-    const ws = findWidget(node, seqName);
+    const ws = findWidget(node, "outpaint_seq");
     if (!ws) return;
     const wseed = findWidget(node, "seed");
     if (wseed) {
@@ -4162,9 +4107,7 @@ function triggerOutpaintRetry(node) {
         syncSeedInput(node);
     }
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    _angeloToast(node._AngeloPendingOp === "upscale"
-        ? "Re-rolling the 2× restore with a fresh seed…"
-        : "Trying the extension again with a fresh seed…");
+    _angeloToast("Trying the extension again with a fresh seed…");
     queuePrompt();
 }
 
@@ -4436,10 +4379,6 @@ function syncRestoreToggle(node) {
         ? false
         : findWidget(node, "restore_mode")?.value;
     _syncToggle(node._AngeloRestoreToggle, effective, _TOGGLE_ON_COLORS.amber);
-}
-
-function syncFacePolishToggle(node) {
-    _syncToggle(node._AngeloFacePolishToggle, findWidget(node, "face_polish")?.value, _TOGGLE_ON_COLORS.green);
 }
 
 function syncReferenceControls(node) {
@@ -4801,7 +4740,6 @@ function syncAllToolbarControls(node) {
     syncPaintModeToggle(node);
     syncRestoreToggle(node);
     syncReferenceControls(node);
-    syncFacePolishToggle(node);
     syncPromptSlotButtons(node);
     syncFineUpscaleToggle(node);
     syncClickRadiusInput(node);
@@ -4964,8 +4902,8 @@ function hideMechanicalWidgets(node) {
         "refine_reference", "reference_strength",
         // Quick Photo Refine — driven by the ✨ button
         "quick_refine_seq",
-        // 2× Restore / 2× Upscale — driven by the ⬆ buttons + Faces toggle
-        "upscale_seq", "upscale_mode", "face_polish",
+        // ⬆ 2× Pixel — driven by the button
+        "upscale_seq",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
