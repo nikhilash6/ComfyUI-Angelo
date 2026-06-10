@@ -879,7 +879,7 @@ _UPSCALE_RESTORE_PROMPT_QWEN = ("lightly restore this old image, remove dust and
 # positive evals per tile step). Restore passes keep the full 1.0/1.0
 # recipe — these numbers are for adding crispness, not repairing.
 _UPSCALE_TILE_REF = 1.0
-_UPSCALE_TILE_DENOISE = 1.0
+_UPSCALE_TILE_DENOISE = 0.8
 
 # Face polish: the automatic finishing stage of both upscale buttons.
 # SAM 3 (the optional Detect dependency) finds faces in the upscaled
