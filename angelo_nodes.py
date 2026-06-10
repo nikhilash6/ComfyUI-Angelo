@@ -2210,8 +2210,10 @@ class AngeloRefine:
                     # fresh latent and blow away the canvas we just committed.
                     "fingerprint": state.get("fingerprint"),
                     "loaded_seq": state.get("loaded_seq"),
-                    "sampler_seed_at_run": state.get("sampler_seed_at_run"),
-                    "refine_seed_at_run": state.get("refine_seed_at_run"),
+                    "sampler_seed_at_run": state.get("sampler_seed_at_run", int(sampler_seed)),
+                    "refine_seed_at_run": (state.get("refine_seed_at_run")
+                                           if state.get("refine_seed_at_run") is not None
+                                           else int(seed)),
                     "source_latent": op_lat,
                     "source_pixels": op_px,
                 }
@@ -2462,8 +2464,10 @@ class AngeloRefine:
                 "upscale_seq": upscale_seq,
                 "fingerprint": state.get("fingerprint"),
                 "loaded_seq": state.get("loaded_seq"),
-                "sampler_seed_at_run": state.get("sampler_seed_at_run"),
-                "refine_seed_at_run": state.get("refine_seed_at_run"),
+                "sampler_seed_at_run": state.get("sampler_seed_at_run", int(sampler_seed)),
+                "refine_seed_at_run": (state.get("refine_seed_at_run")
+                                       if state.get("refine_seed_at_run") is not None
+                                       else int(seed)),
                 "source_latent": up_latent,
                 "source_pixels": up_pixels,
             }
@@ -2807,7 +2811,10 @@ class AngeloRefine:
         ui_msg = {
             "Angelo_preview": [],
             "Angelo_mode": ["Edit Mode"],
-            "Angelo_refine_seed_at_run": [int(state.get("refine_seed_at_run", seed))],
+            "Angelo_refine_seed_at_run": [
+                int(state["refine_seed_at_run"])
+                if state.get("refine_seed_at_run") is not None else int(seed)
+            ],
         }
         
         if current_pixels is not None:
