@@ -47,6 +47,7 @@ Angelo collapses that into:
 - **Smart Guided Inpaint** — no drawing at all: pick a location from a dropdown ("top left", "center", …) + describe what to add, and the edit model places it.
 - **Detect** a region by *describing* it (optional SAM 3) — type "the face", click the highlight, and it masks the silhouette for you. No painting. Nudge the mask in/out, or Shift/Alt-drag to touch it up by hand.
 - **⚡ Fix All** — detect "face" in a group shot, hit one button, and Angelo works through *every* face automatically — each at Xtra-Fine quality with your Area Prompt, each individually undoable. ADetailer's pitch, but visible, stoppable, and prompt-controlled.
+- **Outpaint** — click near an edge of the preview to extend the canvas that way (or use arrows / extend-all for a zoom-out). Every result is reviewed before it commits — Accept, re-roll it, or walk away free.
 - **Vary ×4** — re-roll with four dice: generate four variations of your last edit at once and click your favourite from a 2×2 chooser. Nothing commits until you pick.
 - **Re-roll** the last edit with a fresh seed on the same mask + original image, or **toggle Persistent Mask** to keep evolving a region over repeated Queues.
 - **Restore brush** — toggle Restore and paint to heal a region back to the *original* image, instantly (no sampling). The Lightroom "erase part of an edit" gesture: refine a spacesuit, then brush the face inside the helmet back to how it was.
@@ -291,6 +292,7 @@ Three options for how a region is treated. The two Smart modes need an **edit-tr
 | **Refine** (default) | Painted/clicked region is the starting state — the model partially denoises the existing pixels per the denoise level. Mask is a click circle or a paint stroke. | Face/hand fixes, polish, style adjustments, **editing what's already there** |
 | **Smart Inpaint** | Drag a rectangle (click + hold one corner, release at the opposite). Locks `denoise=1.0`, `Xtra-Fine=ON`, `Area Prompt=ON`. Injects `reference_latents` so an edit model's edit branch activates, then zeros the masked latent so the region regenerates from full noise. | **Adding new content** in a specific drawn region |
 | **Smart Guided Inpaint** | No painting or boxes. Pick a **location** from a dropdown ("Top left", "Center", "Bottom half", …); it's prepended to your Area Prompt at run time (e.g. *"In the top left of the image, a red car"*) and the edit model places it across the whole image. Locks `denoise=1.0`, `Xtra-Fine=OFF`, `Area Prompt=ON`; press **Generate Guided Edit** to run. | **Adding new content** when you don't want to draw — quick, coarse placement |
+| **Outpaint** | Extend the canvas. Arrow buttons or click near a preview edge; every result goes through a **review overlay** (Accept / Try again / Cancel) before anything commits. Accepting installs the new canvas as a **fresh session base — history resets**. See "Outpaint" below. | **Growing the image** — wider scene, taller sky, zoom-out |
 
 ### Why Smart Inpaint exists
 
@@ -340,6 +342,27 @@ Honest expectations: text-based placement is fuzzy by nature. Coarse regions ("t
 …and the run (Location `Left edge`, *"a magical glowing whole in the ground, Keep the lighting the same"*) puts the glow on the left while leaving the rest of the scene intact:
 
 ![Smart Guided Inpaint — glow placed on the left edge](screenshots/smart-guided-left-edge.png)
+
+### Outpaint — extending the canvas
+
+Switch **Inpaint ▾** to **Outpaint** and the canvas becomes a direction picker:
+
+1. **Hover near any edge of the preview** — a glowing band shows the extension direction and amount (e.g. `➡ +256px`). **Click to extend that way.** Or use the arrow buttons (← ↑ ↓ → / ⛶ All) on the Outpaint row if you prefer explicit controls.
+2. Angelo pads the canvas, generates the new region at full denoise, and shows the result in a **review overlay**: **✓ Accept**, **🎲 Try again** (same extension, fresh seed), or **✕ Cancel** / Esc. **Nothing commits until you Accept** — try-again and cancel are free.
+3. On Accept, the extended canvas becomes the session's **new base image** — exactly like loading a new photo. **Undo history resets**, and Reset / the Restore brush / the `\` compare key all anchor to the new canvas from here on. This is a deliberate design fact: outpainting is a structural decision you make early, then refine on top of — and it's why the review step exists.
+
+Controls on the Outpaint row:
+
+- **Amount** — pixels to extend by (snapped to /16 so any VAE lands on clean latent cells). The edge-hover band displays it live.
+- **Overlap** — a feathered band reaching this many pixels *into* the existing image that gets redrawn along with the strip, so the seam blends instead of butting. Default 64.
+
+Notes:
+
+- **Area Prompt stays live** in Outpaint — use it to say what's in the new space (*"a pier stretching into the sea"*). Without it, the main prompt carries the scene.
+- On **FLUX 2 Klein / Qwen-Image-Edit**, the original image is injected as a reference so the edit branch continues the scene in-style — outpainting is what these models are great at. On non-edit models it's a standard high-denoise fill (harmless, just less style-locked).
+- **Corners handle themselves**: every extension spans the full current edge, so extending right *then* down generates the bottom-right corner as part of the down-pass, with both neighbours as context. Extend in any order.
+- The existing image stays **bit-exact** — the original latent is pasted back over the old region after the pad, so there's no VAE round-trip drift outside the seam band.
+- **⛶ All** extends all four sides at once — the zoom-out move.
 
 ## Detect — auto-segment with SAM 3 (optional)
 
