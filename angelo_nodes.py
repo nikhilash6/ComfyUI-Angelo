@@ -850,6 +850,15 @@ _QUICK_REFINE_REF = 1.0
 # same reason.
 _TILE_PX = 1024
 _TILE_OVERLAP_PX = 128
+
+
+def _tile_min_overlap_px(canvas_long_edge: int) -> int:
+    """Canvas-proportional MINIMUM tile overlap. Bigger canvases mean each
+    tile sees a smaller slice of the scene, so neighbours need more shared
+    context to agree. Linear in the long edge, calibrated on tested
+    points: 3872px -> 172, 7744px -> 256; clamps to the 128px floor below
+    ~1840px."""
+    return max(_TILE_OVERLAP_PX, 88 + round(canvas_long_edge / 46.0))
 _QUICK_REFINE_TILE_THRESHOLD_MP = 1.6
 
 # 2× Restore Upscale is TWO-STAGE: restoration is a GLOBAL judgement
@@ -930,16 +939,18 @@ def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
     return head + tail
 
 
-def _tile_positions(total: int, tile: int, stride: int) -> list[int]:
-    """Start offsets covering [0, total) with `tile`-sized windows at
-    `stride` spacing, the last window pulled flush to the end so the far
-    edge is always covered exactly once (no sliver tiles)."""
+def _tile_positions(total: int, tile: int, overlap: int) -> list[int]:
+    """Start offsets covering [0, total) with `tile`-sized windows,
+    UNIFORMLY distributed so every seam gets the same overlap (>= the
+    requested minimum). The old flush-to-end layout produced wildly
+    inconsistent seams (128px here, 900px there) — uniform spacing means
+    every boundary shares at least the minimum context, evenly."""
     if total <= tile:
         return [0]
-    pos = list(range(0, total - tile + 1, stride))
-    if pos[-1] + tile < total:
-        pos.append(total - tile)
-    return pos
+    stride = max(1, tile - max(0, overlap))
+    n = max(2, math.ceil((total - overlap) / stride))
+    step = (total - tile) / (n - 1)
+    return [round(i * step) for i in range(n)]
 
 
 def _tiled_restore_pass(
@@ -1006,14 +1017,15 @@ def _tiled_restore_pass(
 
     tile_lx = max(8, _TILE_PX // ppl_x)
     tile_ly = max(8, _TILE_PX // ppl_y)
-    ov_lx = max(1, _TILE_OVERLAP_PX // ppl_x)
-    ov_ly = max(1, _TILE_OVERLAP_PX // ppl_y)
-    xs = _tile_positions(nlw, tile_lx, tile_lx - ov_lx)
-    ys = _tile_positions(nlh, tile_ly, tile_ly - ov_ly)
+    min_ov_px = _tile_min_overlap_px(max(new_W, new_H))
+    ov_lx = max(1, min_ov_px // ppl_x)
+    ov_ly = max(1, min_ov_px // ppl_y)
+    xs = _tile_positions(nlw, tile_lx, ov_lx)
+    ys = _tile_positions(nlh, tile_ly, ov_ly)
     n_tiles = len(xs) * len(ys)
     print(f"[Angelo tiled-restore] scale={scale} canvas={new_W}x{new_H} "
           f"grid={len(xs)}x{len(ys)} ({n_tiles} tiles of ~{_TILE_PX}px, "
-          f"overlap {_TILE_OVERLAP_PX}px)")
+          f"min overlap {min_ov_px}px, uniform spacing)")
 
     out = torch.zeros_like(big_pixels)
     wsum = torch.zeros((1, new_H, new_W, 1), dtype=big_pixels.dtype, device=big_pixels.device)
@@ -1064,8 +1076,8 @@ def _tiled_restore_pass(
 
             py0, px0 = y0 * ppl_y, x0 * ppl_x
             pth, ptw = tile_px.shape[1], tile_px.shape[2]
-            wy = _ramp(pth, _TILE_OVERLAP_PX, big_pixels.device)
-            wx = _ramp(ptw, _TILE_OVERLAP_PX, big_pixels.device)
+            wy = _ramp(pth, min_ov_px, big_pixels.device)
+            wx = _ramp(ptw, min_ov_px, big_pixels.device)
             w = (wy.view(1, -1, 1, 1) * wx.view(1, 1, -1, 1)).to(big_pixels.dtype)
             out[:, py0:py0 + pth, px0:px0 + ptw, :] += tile_px * w
             wsum[:, py0:py0 + pth, px0:px0 + ptw, :] += w
