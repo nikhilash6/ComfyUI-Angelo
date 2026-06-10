@@ -92,6 +92,14 @@ function installKeyboardShortcuts() {
         const node = _AngeloHoveredNode;
         if (!node) return;
 
+        // Esc closes the Outpaint review first (cancels at zero cost —
+        // nothing was committed).
+        if (event.key === "Escape" && isOutpaintReviewOpen(node)) {
+            hideOutpaintReview(node);
+            event.preventDefault();
+            return;
+        }
+
         // Esc closes the Vary chooser first (keeps the current result),
         // before falling through to detect-mode dismissal.
         if (event.key === "Escape" && isVaryChooserOpen(node)) {
@@ -431,6 +439,12 @@ app.registerExtension({
                 showVaryChooser(this, varyRefs);
             }
 
+            // Outpaint: the extended canvas arrived → open the review.
+            const opRefs = message?.Angelo_outpaint_preview;
+            if (opRefs && opRefs.length) {
+                showOutpaintReview(this, opRefs[0]);
+            }
+
             // Fix All: this run has landed — fire the next candidate. The
             // small delay lets the fresh preview paint (and the green tick
             // register) before the next confirm queues.
@@ -517,11 +531,15 @@ function attachPreviewCanvas(node) {
     refineRowsWrap.style.borderTop = "1px solid #333";
     const row1 = makeToolbarRow();
     const row2 = makeToolbarRow();
+    const outpaintRow = makeToolbarRow(); // Outpaint mode only (populated below)
+    outpaintRow.style.display = "none";
     const detectRow = makeToolbarRow();   // SAM 3 detect (Refine + Smart Inpaint)
     detectRow.style.flexWrap = "nowrap";  // keep it one line; the text box flexes
     refineRowsWrap.appendChild(row1);
     refineRowsWrap.appendChild(row2);
+    refineRowsWrap.appendChild(outpaintRow);
     refineRowsWrap.appendChild(detectRow);
+    node._AngeloOutpaintRow = outpaintRow;
     node._AngeloDetectRow = detectRow;
 
     toggleBarWrap.appendChild(modeRow);
@@ -563,6 +581,7 @@ function attachPreviewCanvas(node) {
     const rerollBtn = makeActionButton("Re-roll", () => triggerReroll(node), "reroll");
     rerollBtn.title = "Try the most recent edit again with a fresh seed — SAME mask, SAME starting image. Each press replaces the last attempt with a new variation (it doesn't stack on top). Make an edit first, then Re-roll to cycle seeds without re-painting or resetting. Works for clicks, brush strokes, rectangles and detected masks.";
     row1.appendChild(rerollBtn);
+    node._AngeloRerollBtn = rerollBtn;
 
     const varyBtn = makeActionButton("Vary ×4", () => triggerVary(node), "vary");
     varyBtn.title = "Generate FOUR variations of the most recent edit at once — same mask, same "
@@ -641,7 +660,7 @@ function attachPreviewCanvas(node) {
     const inpaintModeWidget = findWidget(node, "inpainting_mode");
     const inpaintModeOptions = (inpaintModeWidget && inpaintModeWidget.options && inpaintModeWidget.options.values)
         ? inpaintModeWidget.options.values
-        : ["Refine", "Smart Inpaint", "Smart Guided Inpaint"];
+        : ["Refine", "Smart Inpaint", "Smart Guided Inpaint", "Outpaint"];
     const inpaintModeSelect = makeDropdown("Inpaint",
         inpaintModeOptions,
         (val) => {
@@ -670,7 +689,8 @@ function attachPreviewCanvas(node) {
     inpaintModeSelect.title = "Inpainting Mode.\n\n"
         + "Refine — paint/click on the canvas to refine an existing region (faces, hands, textures). Partial-denoise from existing content.\n\n"
         + "Smart Inpaint — drag a rectangle on the canvas (click and hold one corner, release at the opposite). Adds NEW content in that region. Locks denoise=1.0 + Xtra-Fine=ON + Area Prompt=ON; injects reference_latents so an edit model's (FLUX 2 Klein 9B etc.) edit branch activates. Feather defaults to 15 (soft blend) but stays adjustable.\n\n"
-        + "Smart Guided Inpaint — no painting or boxes. Pick a LOCATION from the dropdown above the Area Prompt (top left, center, bottom half, …); it's prepended to your prompt at run time (e.g. 'In the top left of the image, a red car') and the edit model places the content there across the whole image. Locks denoise=1.0 + Xtra-Fine=OFF + Area Prompt=ON; Feather and Persistent Mask disabled (no mask). Press 'Generate Guided Edit' to run. Coarse regions land most reliably.";
+        + "Smart Guided Inpaint — no painting or boxes. Pick a LOCATION from the dropdown above the Area Prompt (top left, center, bottom half, …); it's prepended to your prompt at run time (e.g. 'In the top left of the image, a red car') and the edit model places the content there across the whole image. Locks denoise=1.0 + Xtra-Fine=OFF + Area Prompt=ON; Feather and Persistent Mask disabled (no mask). Press 'Generate Guided Edit' to run. Coarse regions land most reliably.\n\n"
+        + "Outpaint — extend the canvas. Use the arrow buttons, or click near an edge of the preview (a glowing band shows where the extension goes). Every result is shown in a review overlay first — Accept commits it as a NEW session base (history resets), Try again re-rolls it, Cancel costs nothing.";
     row1.appendChild(inpaintModeSelect);
     node._AngeloInpaintModeSelect = inpaintModeSelect;
 
@@ -774,6 +794,63 @@ function attachPreviewCanvas(node) {
     methodSelect.title = "Xtra-Fine: pixel-space enlarge method. lanczos = sharpest with mild ringing; bilinear = smooth (great for skin/faces); bicubic = middle; nearest-exact = blocky preserves exact values; bislerp/area = niche. Only used when Xtra-Fine is ON.";
     row2.appendChild(methodSelect);
     node._AngeloMethodSelect = methodSelect;
+
+    // ===== OUTPAINT ROW: direction + amount (Outpaint mode only) =====
+    // Arrows extend the canvas in that direction; "All" pads every side
+    // (zoom-out). The same action is available by clicking near an edge
+    // of the preview — the row is the explicit/discoverable surface, the
+    // canvas is the fast one. Every result goes through a review overlay
+    // before anything commits.
+    const opModeLabel = document.createElement("span");
+    opModeLabel.textContent = "⛶ Outpaint:";
+    opModeLabel.style.cssText = "font-size:11px; color:#bbb; padding:0 2px 0 4px; white-space:nowrap;";
+    outpaintRow.appendChild(opModeLabel);
+
+    const mkOutpaintBtn = (txt, dir, tip) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = txt;
+        b.title = tip;
+        b.style.cssText = "cursor:pointer; padding:3px 9px; font-size:13px; font-weight:bold; "
+            + "border:1px solid rgba(120,190,235,0.7); border-radius:3px; "
+            + "background:rgba(40,62,82,0.95); color:#d8eeff; line-height:1; "
+            + "user-select:none; flex:0 0 auto;";
+        b.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            triggerOutpaint(node, dir);
+        });
+        b.addEventListener("pointerdown", (e) => e.stopPropagation());
+        return b;
+    };
+    outpaintRow.appendChild(mkOutpaintBtn("←", "left", "Extend the canvas to the LEFT by Amount px"));
+    outpaintRow.appendChild(mkOutpaintBtn("↑", "up", "Extend the canvas UPWARD by Amount px"));
+    outpaintRow.appendChild(mkOutpaintBtn("↓", "down", "Extend the canvas DOWNWARD by Amount px"));
+    outpaintRow.appendChild(mkOutpaintBtn("→", "right", "Extend the canvas to the RIGHT by Amount px"));
+    outpaintRow.appendChild(mkOutpaintBtn("⛶ All", "all", "Extend ALL four sides by Amount px (zoom-out)"));
+
+    outpaintRow.appendChild(makeSeparator());
+
+    const opAmountInput = makeNumberInput("Amount", { min: 16, max: 2048, step: 16, width: 56 }, (val) => {
+        const w = findWidget(node, "outpaint_amount");
+        if (w) setWidget(w, Math.round(val / 16) * 16);
+    });
+    opAmountInput.title = "How many pixels to extend the canvas by (snapped to /16 so any VAE lands on clean latent cells).";
+    outpaintRow.appendChild(opAmountInput);
+    node._AngeloOutpaintAmountInput = opAmountInput;
+
+    const opOverlapInput = makeNumberInput("Overlap", { min: 0, max: 512, step: 8, width: 50 }, (val) => {
+        const w = findWidget(node, "outpaint_overlap");
+        if (w) setWidget(w, Math.round(val));
+    });
+    opOverlapInput.title = "Feathered band reaching this many pixels INTO the existing image — that band is redrawn so the seam blends instead of butting. 64 is a good default.";
+    outpaintRow.appendChild(opOverlapInput);
+    node._AngeloOutpaintOverlapInput = opOverlapInput;
+
+    const opHint = document.createElement("span");
+    opHint.textContent = "…or click near an edge of the preview";
+    opHint.style.cssText = "font-size:10px; color:#8aa; padding:0 4px; white-space:nowrap;";
+    outpaintRow.appendChild(opHint);
 
     // ===== DETECT ROW: SAM 3 auto-segment (Refine + Smart Inpaint) =====
     const detLabel = document.createElement("span");
@@ -1271,6 +1348,83 @@ function attachPreviewCanvas(node) {
     node._AngeloVaryOverlay = varyOverlay;
     node._AngeloVaryGrid = varyGrid;
 
+    // Outpaint review — the extended canvas shown full-size with three
+    // choices. NOTHING commits until Accept: Try again re-rolls the same
+    // extension with a fresh seed, Cancel/Esc walks away free. Accepting
+    // installs the new canvas as a fresh session base (history resets —
+    // stated right on the button so it's never a surprise).
+    const opOverlay = document.createElement("div");
+    opOverlay.style.cssText = "position:absolute; inset:0; z-index:10; display:none; "
+        + "flex-direction:column; gap:6px; padding:8px; background:rgba(0,0,0,0.85);";
+    const opHeader = document.createElement("div");
+    opHeader.style.cssText = "display:flex; align-items:center; justify-content:space-between; "
+        + "color:#ddd; font:bold 12px Arial,sans-serif;";
+    const opTitle = document.createElement("span");
+    opTitle.textContent = "Outpaint preview — keep it?";
+    const opEsc = document.createElement("span");
+    opEsc.textContent = "Esc = cancel";
+    opEsc.style.cssText = "font-weight:normal; font-size:10px; color:#8aa;";
+    opHeader.appendChild(opTitle);
+    opHeader.appendChild(opEsc);
+    const opImgWrap = document.createElement("div");
+    opImgWrap.style.cssText = "flex:1 1 auto; min-height:0; display:flex; "
+        + "align-items:center; justify-content:center;";
+    const opImg = document.createElement("img");
+    opImg.style.cssText = "max-width:100%; max-height:100%; object-fit:contain; display:block; "
+        + "border:1px solid #444; border-radius:3px;";
+    opImg.draggable = false;
+    opImgWrap.appendChild(opImg);
+    const opBtnRow = document.createElement("div");
+    opBtnRow.style.cssText = "display:flex; justify-content:center; gap:8px;";
+    const mkOpReviewBtn = (txt, css) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = txt;
+        b.style.cssText = "font-size:12px; font-weight:bold; padding:5px 14px; border-radius:4px; "
+            + "cursor:pointer; " + css;
+        for (const ev of ["pointerdown", "mousedown"]) {
+            b.addEventListener(ev, (e) => e.stopPropagation());
+        }
+        return b;
+    };
+    const opAcceptBtn = mkOpReviewBtn("✓ Accept (new base — history resets)",
+        "border:1px solid #4a7; background:rgba(30,120,80,0.95); color:#fff;");
+    opAcceptBtn.title = "Commit the extended canvas as the session's new base image. "
+        + "Like loading a new photo: Undo history resets, and Reset / Restore / the \\ compare "
+        + "key all anchor to this new canvas.";
+    const opRetryBtn = mkOpReviewBtn("🎲 Try again",
+        "border:1px solid rgba(170,130,220,0.9); background:rgba(58,50,72,0.95); color:#ecdcff;");
+    opRetryBtn.title = "Re-roll the same extension with a fresh seed. Nothing has been committed.";
+    const opCancelBtn = mkOpReviewBtn("✕ Cancel",
+        "border:1px solid #555; background:#2a2a2a; color:#ccc;");
+    opCancelBtn.title = "Walk away — the canvas stays exactly as it was. Nothing was committed.";
+    opAcceptBtn.addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        hideOutpaintReview(node);
+        triggerOutpaintAccept(node);
+    });
+    opRetryBtn.addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        hideOutpaintReview(node);
+        triggerOutpaintRetry(node);
+    });
+    opCancelBtn.addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        hideOutpaintReview(node);
+    });
+    opBtnRow.appendChild(opAcceptBtn);
+    opBtnRow.appendChild(opRetryBtn);
+    opBtnRow.appendChild(opCancelBtn);
+    opOverlay.appendChild(opHeader);
+    opOverlay.appendChild(opImgWrap);
+    opOverlay.appendChild(opBtnRow);
+    for (const ev of ["pointerdown", "mousedown", "click", "wheel"]) {
+        opOverlay.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    canvasWrap.appendChild(opOverlay);
+    node._AngeloOutpaintOverlay = opOverlay;
+    node._AngeloOutpaintImg = opImg;
+
     // Per-node view state (zoom/pan). zoom 1 = fit; pan in CSS px.
     node._AngeloZoom = 1;
     node._AngeloPanX = 0;
@@ -1452,6 +1606,17 @@ function attachPreviewCanvas(node) {
         if (!p) return;
         node._AngeloHover = { x: p.cssX, y: p.cssY };
 
+        // Outpaint mode: the canvas is a direction picker — hovering near
+        // an edge highlights the extension band, clicking commits it.
+        if (isOutpaintMode(node)) {
+            const dir = _outpaintEdgeDir(node, p);
+            if (dir !== node._AngeloOutpaintHoverDir) {
+                node._AngeloOutpaintHoverDir = dir;
+            }
+            redrawCanvasWithOverlays(node);
+            return;
+        }
+
         // Detection select mode.
         if (node._AngeloDetections && node._AngeloDetections.length) {
             // Active touch-up stroke → extend the brush along the drag.
@@ -1504,6 +1669,7 @@ function attachPreviewCanvas(node) {
 
     canvas.addEventListener("pointerleave", () => {
         node._AngeloHover = null;
+        node._AngeloOutpaintHoverDir = null;
         if (node._AngeloBrushPreview) node._AngeloBrushPreview = null;
         // IMPORTANT: do NOT cancel an active paint stroke here. With
         // pointer capture set on pointerdown, we keep receiving move/up
@@ -1545,6 +1711,9 @@ function attachPreviewCanvas(node) {
             }
             return;
         }
+        // Outpaint mode: no strokes or rectangles — the click handler owns
+        // the edge-click extension.
+        if (isOutpaintMode(node)) return;
         // Smart Guided Inpaint has no canvas interaction at all — the
         // location comes from the dropdown, the run from the button.
         if (isSmartGuidedInpaintMode(node)) return;
@@ -1663,6 +1832,13 @@ function attachPreviewCanvas(node) {
             const p = eventToImagePixel(event);
             const det = p ? _detAtPoint(node, p.pixelX, p.pixelY) : null;
             if (det) confirmDetection(node, det);
+            return;
+        }
+        // Outpaint mode: a click near an edge extends the canvas that way.
+        if (isOutpaintMode(node)) {
+            if (node._AngeloOutpaintHoverDir) {
+                triggerOutpaint(node, node._AngeloOutpaintHoverDir);
+            }
             return;
         }
         if (isSmartGuidedInpaintMode(node)) return; // no canvas interaction
@@ -2363,13 +2539,53 @@ function redrawCanvasWithOverlays(node) {
     // Cursor changes by mode — only remaining visual indicator now
     // that the corner pills are gone.
     if (canvas) {
-        if (isSmartGuidedInpaintMode(node)) {
+        if (isOutpaintMode(node)) {
+            canvas.style.cursor = node._AngeloOutpaintHoverDir ? "pointer" : "default";
+        } else if (isSmartGuidedInpaintMode(node)) {
             canvas.style.cursor = "default";  // no canvas interaction
         } else if (isSmartInpaintMode(node)) {
             canvas.style.cursor = "crosshair";
         } else {
             canvas.style.cursor = isPaintModeOn(node) ? "cell" : "crosshair";
         }
+    }
+
+    // Outpaint mode: a glowing band along the hovered edge previews the
+    // extension direction (with the amount), then nothing else — no hover
+    // ring, no strokes, no detections in this mode.
+    if (isOutpaintMode(node)) {
+        const dir = node._AngeloOutpaintHoverDir;
+        if (dir && node._AngeloImg) {
+            const W = canvas.width, H = canvas.height;
+            const t = Math.max(24, Math.round(Math.min(W, H) * 0.12));
+            let x = 0, y = 0, w = W, h = H, glyph = "➡";
+            if (dir === "left") { w = t; glyph = "⬅"; }
+            else if (dir === "right") { x = W - t; w = t; glyph = "➡"; }
+            else if (dir === "up") { h = t; glyph = "⬆"; }
+            else if (dir === "down") { y = H - t; h = t; glyph = "⬇"; }
+            ctx.save();
+            let grad;
+            if (dir === "left") grad = ctx.createLinearGradient(x, 0, x + w, 0);
+            else if (dir === "right") grad = ctx.createLinearGradient(x + w, 0, x, 0);
+            else if (dir === "up") grad = ctx.createLinearGradient(0, y, 0, y + h);
+            else grad = ctx.createLinearGradient(0, y + h, 0, y);
+            grad.addColorStop(0, "rgba(120, 190, 235, 0.55)");
+            grad.addColorStop(1, "rgba(120, 190, 235, 0.0)");
+            ctx.fillStyle = grad;
+            ctx.fillRect(x, y, w, h);
+            const amtW = findWidget(node, "outpaint_amount");
+            const amt = (amtW && amtW.value) || 256;
+            const fs = Math.max(16, Math.round(Math.min(W, H) * 0.04));
+            ctx.font = `bold ${fs}px Arial, sans-serif`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.shadowColor = "rgba(0, 0, 0, 0.85)";
+            ctx.shadowBlur = 6;
+            ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+            ctx.fillText(`${glyph} +${amt}px`, x + w / 2, y + h / 2);
+            ctx.restore();
+        }
+        return;
     }
 
     const rect = canvas.getBoundingClientRect();
@@ -3221,7 +3437,7 @@ function syncDetectControls(node) {
     if (!row) return;
     const modeW = findWidget(node, "mode");
     const inEdit = modeW && String(modeW.value) === "Edit Mode";
-    const show = inEdit && !isSmartGuidedInpaintMode(node);
+    const show = inEdit && !isSmartGuidedInpaintMode(node) && !isOutpaintMode(node);
     // Must restore "flex" (not "") — an empty string reverts the row to a
     // <div>'s default display:block, which kills flex-wrap:nowrap and the
     // separator's align-self:stretch (dropdown drops to a new line, sep
@@ -3536,6 +3752,106 @@ function triggerVaryPick(node, idx) {
     queuePrompt();
 }
 
+// ===== Outpaint — directional canvas extension with review-before-commit =====
+
+function isOutpaintMode(node) {
+    const w = findWidget(node, "inpainting_mode");
+    return !!w && w.value === "Outpaint";
+}
+
+// Fire one extension. Direction from the arrows or the edge-click; amount
+// + overlap already live in their widgets via the Outpaint row inputs.
+function triggerOutpaint(node, dir) {
+    const ws = findWidget(node, "outpaint_seq");
+    const wd = findWidget(node, "outpaint_dir");
+    if (!ws || !wd) return;
+    if (!node._AngeloImg) {
+        _angeloToast("Generate or load an image first, then outpaint");
+        return;
+    }
+    setWidget(wd, dir);
+    setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
+    const amtW = findWidget(node, "outpaint_amount");
+    const amt = (amtW && amtW.value) || 256;
+    const dirLabel = { left: "left", right: "right", up: "up", down: "down", all: "all sides" }[dir] || dir;
+    _angeloToast(`Outpainting ${dirLabel} +${amt}px…`);
+    dbg("queue outpaint", { dir, amt, outpaint_seq: ws.value });
+    queuePrompt();
+}
+
+function showOutpaintReview(node, ref) {
+    const ov = node._AngeloOutpaintOverlay;
+    const img = node._AngeloOutpaintImg;
+    if (!ov || !img) return;
+    img.src = makeViewUrl(ref);
+    ov.style.display = "flex";
+}
+
+function hideOutpaintReview(node) {
+    if (node._AngeloOutpaintOverlay) node._AngeloOutpaintOverlay.style.display = "none";
+}
+
+function isOutpaintReviewOpen(node) {
+    return !!(node._AngeloOutpaintOverlay && node._AngeloOutpaintOverlay.style.display !== "none");
+}
+
+function triggerOutpaintAccept(node) {
+    const ws = findWidget(node, "outpaint_accept_seq");
+    if (!ws) return;
+    setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
+    _angeloToast("Committing the new canvas — this is your new base");
+    dbg("queue outpaint accept", { outpaint_accept_seq: ws.value });
+    queuePrompt();
+}
+
+// Same direction + amount, fresh seed. The stale stash is simply
+// overwritten by the new run.
+function triggerOutpaintRetry(node) {
+    const ws = findWidget(node, "outpaint_seq");
+    if (!ws) return;
+    const wseed = findWidget(node, "seed");
+    if (wseed) {
+        setWidget(wseed, Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+        syncSeedInput(node);
+    }
+    setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
+    _angeloToast("Trying the extension again with a fresh seed…");
+    queuePrompt();
+}
+
+// Which edge (if any) the cursor is near enough to for the edge-click
+// extension. Zones are 18% of each dimension; nearest edge wins so the
+// corners resolve cleanly to one direction.
+function _outpaintEdgeDir(node, p) {
+    const img = node._AngeloImg;
+    if (!img || !img.naturalWidth) return null;
+    const W = img.naturalWidth, H = img.naturalHeight;
+    const zx = W * 0.18, zy = H * 0.18;
+    const cands = [];
+    if (p.pixelX <= zx) cands.push(["left", p.pixelX / zx]);
+    if (W - p.pixelX <= zx) cands.push(["right", (W - p.pixelX) / zx]);
+    if (p.pixelY <= zy) cands.push(["up", p.pixelY / zy]);
+    if (H - p.pixelY <= zy) cands.push(["down", (H - p.pixelY) / zy]);
+    if (!cands.length) return null;
+    cands.sort((a, b) => a[1] - b[1]);
+    return cands[0][0];
+}
+
+// Outpaint row visibility + input mirrors.
+function syncOutpaintControls(node) {
+    const row = node._AngeloOutpaintRow;
+    if (row) {
+        const next = isOutpaintMode(node) ? "flex" : "none";
+        if (row.style.display !== next) row.style.display = next;
+    }
+    _syncNumberInput(node._AngeloOutpaintAmountInput, findWidget(node, "outpaint_amount")?.value);
+    _syncNumberInput(node._AngeloOutpaintOverlapInput, findWidget(node, "outpaint_overlap")?.value);
+    if (!isOutpaintMode(node)) {
+        node._AngeloOutpaintHoverDir = null;
+        hideOutpaintReview(node);
+    }
+}
+
 function triggerReset(node) {
     const wr = findWidget(node, "reset");
     const ws = findWidget(node, "click_seq");
@@ -3769,27 +4085,39 @@ function _dimControls(node, ids, dim) {
 function syncSmartInpaintLockedWidgets(node) {
     const guided = isSmartGuidedInpaintMode(node);
     const anySmart = isSmartInpaintMode(node) || guided;
+    const outp = isOutpaintMode(node);
 
     // Common locks for BOTH smart modes — backend forces these or they
     // don't apply: denoise, fine_upscale toggle, paint_mode, click
-    // radius, area_prompt toggle.
+    // radius, area_prompt toggle. Outpaint dims the mask-editing set
+    // too (the canvas is a direction picker there), but Area Prompt
+    // stays LIVE — it describes what fills the new space.
     _dimControls(node, [
         "_AngeloDenoiseInput",
         "_AngeloFineUpscaleToggle",
         "_AngeloPaintModeToggle",
         "_AngeloRestoreToggle",
         "_AngeloClickRadiusInput",
-        "_AngeloAreaPromptToggle",
         "_AngeloCtxPadInput",
-    ], anySmart);
+    ], anySmart || outp);
+    _dimControls(node, ["_AngeloAreaPromptToggle"], anySmart);
 
     // Feather: live in Smart Inpaint (a soft edge can help blend the
-    // insert), disabled in Smart Guided (whole-image edit, no mask edge).
-    _dimControls(node, ["_AngeloFeatherInput"], guided);
+    // insert), disabled in Smart Guided (whole-image edit, no mask edge)
+    // and in Outpaint (its seam blend is the Overlap input instead).
+    _dimControls(node, ["_AngeloFeatherInput"], guided || outp);
 
-    // Persistent Mask: meaningless in Smart Guided (no mask). Dimmed +
-    // forced OFF there; left alone in Smart Inpaint (re-rolls the rect).
-    _dimControls(node, ["_AngeloPersistentMaskToggle"], guided);
+    // Persistent Mask: meaningless in Smart Guided (no mask) and in
+    // Outpaint (no held mask to re-run). Dimmed + forced OFF there;
+    // left alone in Smart Inpaint (re-rolls the rect).
+    _dimControls(node, ["_AngeloPersistentMaskToggle"], guided || outp);
+
+    // Re-roll / Vary act on the edit history — confusing mid-outpaint,
+    // and the review overlay's "Try again" covers the re-roll need.
+    _dimControls(node, ["_AngeloRerollBtn", "_AngeloVaryBtn"], outp);
+
+    // Outpaint row visibility + input mirrors.
+    syncOutpaintControls(node);
 
     // Fine Upscale + Area Prompt toggles' displayed state is forced by
     // the backend (ON for Smart Inpaint; Fine Upscale OFF for Smart
@@ -3868,9 +4196,10 @@ function syncModeState(node) {
     // in Smart Inpaint (rectangle drag); cell when paint mode is on
     // for Refine; crosshair otherwise.
     if (node._AngeloCanvas) {
-        if (inSampler || isSmartGuidedInpaintMode(node)) {
+        if (inSampler || isSmartGuidedInpaintMode(node) || isOutpaintMode(node)) {
             // Sampler Mode: clicks do nothing. Smart Guided: no canvas
             // interaction (location dropdown + Generate button drive it).
+            // Outpaint: default until an edge-hover flips it to pointer.
             node._AngeloCanvas.style.cursor = "default";
         } else if (isSmartInpaintMode(node)) {
             node._AngeloCanvas.style.cursor = "crosshair";
@@ -4064,6 +4393,7 @@ function syncAllToolbarControls(node) {
     syncSamplerDenoiseInput(node);
     syncGuidedLocationSelect(node);
     syncLoadImageControls(node);
+    syncOutpaintControls(node);
     syncDetectControls(node);
     syncSmartInpaintLockedWidgets(node);
     syncAreaPromptBox(node);
@@ -4195,6 +4525,9 @@ function hideMechanicalWidgets(node) {
         "area_prompt_slots",
         // Vary ×4 — driven by the Vary button + chooser overlay
         "vary_seq", "vary_pick", "vary_pick_seq",
+        // Outpaint — driven by the Outpaint row + edge-click + review overlay
+        "outpaint_seq", "outpaint_dir", "outpaint_amount", "outpaint_overlap",
+        "outpaint_accept_seq",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
