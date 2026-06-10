@@ -541,7 +541,10 @@ def _refine_with_fine_upscaling(
     resize_method: str,
     context_pad_pixel: int,
     inpainting_mode: str,
-    seed: int,
+    inject_reference: bool = False,   # Refine + Reference toggle: inject the
+                                      # (pre-refine) crop as reference_latents
+                                      # WITHOUT Smart Inpaint's latent-zeroing
+    seed: int = 0,
     steps: int,
     cfg: float,
     sampler_name: str,
@@ -608,6 +611,12 @@ def _refine_with_fine_upscaling(
         # whole-latent edit with NO crop reference, so the model worked on the
         # whole image instead of the selected rect.
         print(f"[Angelo fine-upscale] scale=1.0 — using latent-space path (no VAE round-trip)")
+        if inject_reference:
+            # Refine + Reference on the no-upscale path: anchor on the whole
+            # current image (there's no crop on this path).
+            positive = node_helpers.conditioning_set_values(
+                positive, {"reference_latents": [current.clone()]}, append=False,
+            )
         noise = comfy.sample.prepare_noise(current, seed, None)
         new_latent = _do_sample(
             guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
@@ -744,6 +753,15 @@ def _refine_with_fine_upscaling(
         if latent_up.ndim == 5:
             sample_mask = (mask_crop_up >= 0.5).to(mask_crop_up.dtype)
         latent_up = (1.0 - sample_mask.unsqueeze(0)) * latent_up
+    elif inject_reference:
+        # Refine + Reference toggle: the upscaled (pre-refine) crop anchors
+        # identity/content through the edit branch, so a high denoise can
+        # fully re-render texture without losing the subject — the photo-
+        # restoration recipe. Unlike Smart Inpaint, the latent is NOT
+        # zeroed: the existing content remains the starting state.
+        positive = node_helpers.conditioning_set_values(
+            positive, {"reference_latents": [latent_up.clone()]}, append=False,
+        )
 
     # ----- Refine via noise-injection inpaint on the upscaled latent -----
     noise = comfy.sample.prepare_noise(latent_up, seed, None)
@@ -1451,6 +1469,24 @@ class AngeloRefine:
                 # composition here MUST stay in lockstep with the JS preview
                 # (syncOutpaintPromptPreview). Declared LAST.
                 "outpaint_instruction_pos": (["prepend", "append"], {"default": "prepend"}),
+
+                # Reference toggle (Refine only): inject the current image
+                # (or the Xtra-Fine crop) as reference_latents so an edit
+                # model's branch anchors identity/content from the REFERENCE
+                # instead of the noised init latent. Breaks the restoration
+                # trade-off: denoise can run high (0.7–1.0) for strong
+                # texture re-rendering without losing the subject. A toggle,
+                # not a default — the reference ANCHORS, which fights Area
+                # Prompts that want to CHANGE the region. Ignored by
+                # non-edit models. Declared LAST.
+                "refine_reference": ("BOOLEAN", {"default": False,
+                                                 "tooltip": "When ON in Refine mode, the current "
+                                                            "image (or Xtra-Fine crop) is injected "
+                                                            "as a reference for edit models — "
+                                                            "anchors identity so Denoise can run "
+                                                            "high for photo restoration. Toggled "
+                                                            "via the Reference button on the "
+                                                            "toolbar."}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1555,6 +1591,7 @@ class AngeloRefine:
         outpaint_accept_seq=0,
         outpaint_protect="",
         outpaint_instruction_pos="prepend",
+        refine_reference=False,
         latent=None,
         clip=None,
         overrides=None,
@@ -2267,6 +2304,23 @@ class AngeloRefine:
                     refine_positive, {"reference_latents": [reference_latent]}, append=True,
                 )
 
+            # Reference toggle (Refine only): anchor identity/content from
+            # the current image so high-denoise refines (photo restoration)
+            # keep the subject. Plain path injects the WHOLE current image
+            # here; the Xtra-Fine path injects its upscaled crop instead
+            # (inject_reference flag below). REPLACE, not append — the main
+            # positive may carry a stale upstream reference (Smart Inpaint
+            # lesson). Restore never samples, so it's excluded.
+            inject_ref = (
+                inpainting_mode == "Refine"
+                and bool(refine_reference)
+                and not restore_now
+            )
+            if inject_ref and not fine_upscaling:
+                refine_positive = node_helpers.conditioning_set_values(
+                    refine_positive, {"reference_latents": [refine_source.clone()]}, append=False,
+                )
+
             # One pass normally; four for Vary ×4. The conditioning above is
             # shared across passes — only the noise seed differs per pass.
             n_passes = 4 if vary_now else 1
@@ -2309,6 +2363,7 @@ class AngeloRefine:
                         resize_method=str(resize_method),
                         context_pad_pixel=int(fine_context_pad),
                         inpainting_mode=str(inpainting_mode),
+                        inject_reference=inject_ref,
                         seed=pass_seed, steps=steps, cfg=cfg,
                         sampler_name=sampler_name, scheduler=scheduler,
                         positive=refine_positive, negative=refine_negative,

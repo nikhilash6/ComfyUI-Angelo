@@ -640,6 +640,24 @@ function attachPreviewCanvas(node) {
     row1.appendChild(restoreToggle);
     node._AngeloRestoreToggle = restoreToggle;
 
+    const refineRefToggle = makeToggleButton("Reference", () => {
+        const w = findWidget(node, "refine_reference");
+        if (!w) return;
+        setWidget(w, !w.value);
+        syncRefineReferenceToggle(node);
+    });
+    refineRefToggle.title = "Reference (Refine only) — inject the current image as a reference for "
+        + "edit models (FLUX 2 Klein / Qwen-Image-Edit). The edit branch anchors identity and "
+        + "content from the REFERENCE instead of the noised latent, so you can push Denoise much "
+        + "higher (0.7–1.0) for strong enhancement without losing the subject.\n\n"
+        + "The photo-restoration recipe: load a soft / low-quality photo, Reference ON, paint over "
+        + "it, Area Prompt \"sharp, high-quality photograph\", Denoise 0.8.\n\n"
+        + "Leave it OFF when your Area Prompt wants to CHANGE the region (e.g. \"smiling\") — the "
+        + "reference anchors, so it fights the change. With Xtra-Fine ON the reference is the "
+        + "upscaled crop. Ignored by non-edit models (SDXL etc.).";
+    row1.appendChild(refineRefToggle);
+    node._AngeloRefineRefToggle = refineRefToggle;
+
     const fineUpscaleToggle = makeToggleButton("Xtra-Fine", () => {
         const w = findWidget(node, "fine_upscaling");
         if (!w) return;
@@ -4217,6 +4235,7 @@ const _TOGGLE_ON_COLORS = {
     purple: { bg: "rgba(95, 50, 130, 0.95)",  border: "rgba(180, 140, 220, 0.9)" },
     teal:   { bg: "rgba(30, 110, 130, 0.95)", border: "rgba(140, 200, 220, 0.9)" },
     amber:  { bg: "rgba(160, 110, 30, 0.95)", border: "rgba(230, 185, 110, 0.9)" },
+    sky:    { bg: "rgba(40, 100, 150, 0.95)", border: "rgba(130, 195, 235, 0.9)" },
 };
 
 function syncPersistentMaskToggle(node) {
@@ -4250,6 +4269,15 @@ function syncRestoreToggle(node) {
         ? false
         : findWidget(node, "restore_mode")?.value;
     _syncToggle(node._AngeloRestoreToggle, effective, _TOGGLE_ON_COLORS.amber);
+}
+
+function syncRefineReferenceToggle(node) {
+    // Refine-only: the Smart modes and Outpaint run their own reference
+    // logic, so display OFF there rather than a stale widget value.
+    const effective = (isAnySmartMode(node) || isOutpaintMode(node))
+        ? false
+        : findWidget(node, "refine_reference")?.value;
+    _syncToggle(node._AngeloRefineRefToggle, effective, _TOGGLE_ON_COLORS.sky);
 }
 
 function syncFineUpscaleToggle(node) {
@@ -4317,6 +4345,7 @@ function syncSmartInpaintLockedWidgets(node) {
         "_AngeloFineUpscaleToggle",
         "_AngeloPaintModeToggle",
         "_AngeloRestoreToggle",
+        "_AngeloRefineRefToggle",
         "_AngeloCtxPadInput",
     ], anySmart || outp);
     // Click R stays LIVE in Outpaint — it's the protect-brush size there.
@@ -4349,6 +4378,7 @@ function syncSmartInpaintLockedWidgets(node) {
     syncAreaPromptToggle(node);
     syncPersistentMaskToggle(node);
     syncRestoreToggle(node);
+    syncRefineReferenceToggle(node);
     syncAreaPromptVisibility(node);
     // Detect row hides in Smart Guided (no mask), shows in Refine/Smart Inpaint.
     syncDetectControls(node);
@@ -4591,6 +4621,7 @@ function syncAllToolbarControls(node) {
     syncAreaPromptToggle(node);
     syncPaintModeToggle(node);
     syncRestoreToggle(node);
+    syncRefineReferenceToggle(node);
     syncPromptSlotButtons(node);
     syncFineUpscaleToggle(node);
     syncClickRadiusInput(node);
@@ -4749,6 +4780,8 @@ function hideMechanicalWidgets(node) {
         // Outpaint — driven by the Outpaint row + edge-click + review overlay
         "outpaint_seq", "outpaint_dir", "outpaint_amount", "outpaint_overlap",
         "outpaint_accept_seq", "outpaint_protect", "outpaint_instruction_pos",
+        // Reference toggle — driven by the Reference button on the toolbar
+        "refine_reference",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
