@@ -659,17 +659,17 @@ function attachPreviewCanvas(node) {
         if (!w) return;
         setWidget(w, val);
     });
-    refineRefInput.title = "Reference strength (0–1, Refine mode) — how long the current image "
-        + "anchors the edit. The reference is attached for the FIRST this-fraction of the sampling "
-        + "schedule, then released: identity and layout lock in early, texture renders freely "
-        + "after. 0 = no reference (classic refine), 1 = anchored the whole way (strongest "
-        + "identity hold).\n\n"
+    refineRefInput.title = "Reference strength (0–1, Refine mode) — how strongly the current image "
+        + "anchors the edit. A TRUE blend: every step mixes the reference-anchored prediction with "
+        + "the free one at this ratio (0.6 = 60% anchored / 40% free). 0 = no reference (classic "
+        + "refine), 1 = fully anchored (strongest identity hold).\n\n"
         + "Photo restoration: try 0.6–1.0 with high Denoise — identity stays while the texture "
         + "fully re-renders. Applies to brush/click refines AND Quick Photo Refine (at 0, Quick "
         + "Refine runs UN-anchored — it will regenerate the image at high denoise).\n\n"
-        + "Keep at 0 when your Area Prompt wants to CHANGE the region (e.g. \"smiling\") — "
-        + "anchoring fights the change. With Xtra-Fine ON the reference is the upscaled crop. "
-        + "Edit models only (Klein / Qwen); ignored elsewhere.";
+        + "Values between 0 and 1 run a second positive pass per step (like CFG's negative does) — "
+        + "a bit slower, that's the price of a real blend; 0 and 1 cost nothing extra. Keep at 0 "
+        + "when your Area Prompt wants to CHANGE the region (anchoring fights the change). With "
+        + "Xtra-Fine ON the reference is the upscaled crop. Edit models only (Klein / Qwen).";
     row1.appendChild(refineRefInput);
     node._AngeloRefineRefInput = refineRefInput;
 
@@ -3955,7 +3955,7 @@ function triggerQuickPhotoRefine(node) {
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
     const refV = Number(findWidget(node, "reference_strength")?.value || 0);
     _angeloToast(refV > 0
-        ? `✨ Quick Photo Refine — anchored for ${Math.round(refV * 100)}% of the schedule…`
+        ? `✨ Quick Photo Refine — reference at ${Math.round(refV * 100)}%…`
         : "✨ Quick Photo Refine — Ref is 0: running UN-anchored (full regeneration at high denoise)");
     dbg("queue quick photo refine", { quick_refine_seq: ws.value, ref: refV });
     queuePrompt();

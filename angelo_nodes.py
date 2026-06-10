@@ -832,23 +832,25 @@ _QUICK_REFINE_PROMPT = "high quality photo"
 
 
 def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
-    """Attach ref_latent as reference_latents with STRENGTH expressed as a
-    fraction of the sampling schedule (timestep-range construction).
+    """Attach ref_latent as reference_latents at a TRUE fractional strength
+    via dual-conditioning prediction blending.
 
     There is no native scalar weight on reference_latents — the reference
-    becomes extra image tokens, take-it-or-leave-it. But conds CAN be
-    timestep-ranged, so strength here means duration of anchoring:
+    becomes extra image tokens, take-it-or-leave-it. But ComfyUI's cond
+    `strength` field is a RELATIVE weight: each cond's prediction is
+    multiplied by its strength, accumulated, then normalised by the total.
+    So two full-coverage conds — [with-reference, strength s] + [plain,
+    strength 1-s] — yield exactly  s·pred_ref + (1-s)·pred_plain  at every
+    step: a genuine prediction-space lerp between anchored and free.
 
-      1.0      → one cond, reference attached for the whole schedule
-      0 < s <1 → TWO conds: [with-reference, 0→s] + [plain, s→1]. The
-                 reference anchors identity/layout while the early,
-                 structure-deciding steps run, then releases so texture
-                 renders freely. Exactly one cond is active per step, so
-                 there's no extra model evaluation cost.
-      0.0      → untouched (no reference)
+      1.0      → one cond, fully anchored (no extra cost)
+      0 < s <1 → the dual-cond blend above. COSTS A SECOND positive-side
+                 model evaluation per step (like CFG's negative does) —
+                 the price of a real interpolation.
+      0.0      → untouched (no reference, no extra cost)
 
-    The percents are fractions of the FULL schedule; at denoise < 1 the
-    run starts partway in, so the anchored portion shrinks proportionally.
+    (A timestep-range variant — strength as DURATION of anchoring — was
+    tried first and rejected by testing; see git history.)
     """
     s = max(0.0, min(1.0, float(strength)))
     if s <= 0.0:
@@ -858,12 +860,8 @@ def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
     )
     if s >= 1.0:
         return with_ref
-    head = node_helpers.conditioning_set_values(
-        with_ref, {"start_percent": 0.0, "end_percent": s},
-    )
-    tail = node_helpers.conditioning_set_values(
-        positive, {"start_percent": s, "end_percent": 1.0},
-    )
+    head = node_helpers.conditioning_set_values(with_ref, {"strength": s})
+    tail = node_helpers.conditioning_set_values(positive, {"strength": 1.0 - s})
     return head + tail
 
 
@@ -1530,18 +1528,16 @@ class AngeloRefine:
                 # a normal history entry so Undo covers it. Declared LAST.
                 "quick_refine_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
 
-                # Reference strength (Refine + Quick Photo Refine): 0–1
-                # fraction of the sampling schedule during which the current
-                # image (or Xtra-Fine crop) is attached as reference_latents
-                # — see _apply_reference. 0 = no reference (classic refine),
-                # 1 = anchored the whole way. Declared LAST.
+                # Reference strength (Refine + Quick Photo Refine): a TRUE
+                # 0–1 blend between the reference-anchored prediction and
+                # the plain one — see _apply_reference. 0 = no reference
+                # (classic refine), 1 = fully anchored. Declared LAST.
                 "reference_strength": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
-                                                 "tooltip": "How long the current image anchors a "
-                                                            "refine: the reference is attached for "
-                                                            "the FIRST this-fraction of the "
-                                                            "schedule, then released. 0 = off, "
-                                                            "1 = whole way. Set via the Ref box "
-                                                            "on the toolbar."}),
+                                                 "tooltip": "How strongly the current image anchors "
+                                                            "a refine — a true blend between the "
+                                                            "anchored and free predictions. 0 = "
+                                                            "off, 1 = fully anchored. Set via the "
+                                                            "Ref box on the toolbar."}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
