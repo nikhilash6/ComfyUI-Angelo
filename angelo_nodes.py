@@ -867,6 +867,23 @@ _UPSCALE_TILE_PROMPT = "high quality photo"
 _UPSCALE_TILE_REF = 0.3
 _UPSCALE_TILE_DENOISE = 0.55
 
+# Face polish: the automatic finishing stage of both upscale buttons.
+# SAM 3 (the optional Detect dependency) finds faces in the upscaled
+# result IN-PROCESS — no UI detect flow — and each face in the size
+# window gets a centred circular refine stamp. Faces below the MIN
+# don't have enough pixels to be worth a pass; faces above the MAX
+# already have all the resolution they need (and stamping a huge,
+# attention-grabbing region risks visible change). Skipped silently
+# (with a console line) when SAM 3 isn't installed.
+_FACE_POLISH_MIN_PX = 250        # min bbox edge, px
+_FACE_POLISH_MAX_MP = 1.0        # max bbox area, megapixels
+_FACE_POLISH_REF = 0.3
+_FACE_POLISH_DENOISE = 0.55
+_FACE_POLISH_CTX_PAD = 64        # px context pad on the crop path
+_FACE_POLISH_CANVAS_MP = 1.6     # <= this: full-canvas context; above: Xtra-Fine crop
+_FACE_POLISH_CONF = 0.4
+_FACE_POLISH_MAX_FACES = 8
+
 
 def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
     """Attach ref_latent as reference_latents at a TRUE fractional strength
@@ -1046,6 +1063,147 @@ def _tiled_restore_pass(
     final_pixels = out / wsum.clamp(min=1e-6)
     final_latent = _vae_encode(vae, final_pixels)
     return final_latent, final_pixels, n_tiles
+
+
+def _face_polish_pass(
+    *,
+    model,
+    vae,
+    latent: torch.Tensor,
+    pixels: torch.Tensor,
+    positive_base,
+    negative,
+    seed: int,
+    steps: int,
+    cfg: float,
+    sampler_name: str,
+    scheduler: str,
+    callback,
+    disable_pbar: bool,
+    ov_guider=None,
+    ov_sampler=None,
+    ov_sigmas=None,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Automatic face polish on an upscaled result: SAM 3 (called
+    in-process, not via the UI detect flow) finds faces; each face whose
+    bbox edge exceeds _FACE_POLISH_MIN_PX and whose area is under
+    _FACE_POLISH_MAX_MP gets a centred, feathered circular refine stamp
+    at _FACE_POLISH_REF / _FACE_POLISH_DENOISE.
+
+    Context strategy follows canvas size: at or below
+    _FACE_POLISH_CANVAS_MP the stamp samples the FULL canvas (the model
+    sees the whole image as context — affordable at that size); above
+    it, the Xtra-Fine crop path runs with _FACE_POLISH_CTX_PAD padding
+    so a 4MP canvas is never sampled whole per face. (The crop path's
+    MP target is nudged just above the crop's own area so the
+    no-upscale whole-canvas shortcut can never trigger.)
+
+    Never raises: any failure (SAM not installed, weights missing,
+    detection error) prints a console line and returns the input
+    unchanged. Returns (latent, pixels, n_polished)."""
+    try:
+        try:
+            from . import angelo_segment
+        except ImportError:
+            import angelo_segment
+
+        from PIL import Image
+        arr = (pixels[0].detach().cpu().float().clamp(0.0, 1.0).numpy() * 255.0).astype("uint8")
+        pil = Image.fromarray(arr)
+        try:
+            res = angelo_segment.detect_text(pil, "face", _FACE_POLISH_CONF, 20)
+        except RuntimeError as e:
+            print(f"[Angelo face-polish] skipped — {e}")
+            return latent, pixels, 0
+        dets = res.get("detections", []) if isinstance(res, dict) else []
+
+        H_pix, W_pix = pixels.shape[1], pixels.shape[2]
+        canvas_mp = (W_pix * H_pix) / 1e6
+        faces = []
+        for d in dets:
+            x1, y1, x2, y2 = d.get("bbox", [0, 0, 0, 0])
+            w, h = max(0.0, x2 - x1), max(0.0, y2 - y1)
+            if max(w, h) < _FACE_POLISH_MIN_PX:
+                continue
+            if (w * h) / 1e6 > _FACE_POLISH_MAX_MP:
+                continue
+            faces.append((x1, y1, x2, y2))
+            if len(faces) >= _FACE_POLISH_MAX_FACES:
+                break
+        if not faces:
+            print("[Angelo face-polish] no faces in the size window — nothing to do")
+            return latent, pixels, 0
+        ctx = "full-canvas context" if canvas_mp <= _FACE_POLISH_CANVAS_MP else "Xtra-Fine crops"
+        print(f"[Angelo face-polish] {len(faces)} face(s) in the "
+              f"{_FACE_POLISH_MIN_PX}px-{_FACE_POLISH_MAX_MP}MP window "
+              f"(canvas {canvas_mp:.1f}MP — {ctx})")
+
+        cur_lat, cur_px = latent, pixels
+        px_dirty = False
+        nlh, nlw = cur_lat.shape[-2], cur_lat.shape[-1]
+        scale_x = nlw / W_pix
+        scale_y = nlh / H_pix
+        scale_geom = math.sqrt(scale_x * scale_y)
+
+        for i, (x1, y1, x2, y2) in enumerate(faces):
+            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            r_px = max(x2 - x1, y2 - y1) / 2.0 * 1.15   # circle just past the bbox
+            mask = _circle_mask_latent_direct(
+                nlh, nlw, cx * scale_x, cy * scale_y,
+                max(1.0, r_px * scale_geom), cur_lat.device,
+            )
+            sigma = max(0.5, (r_px / 4.0) * scale_geom)
+            mask = _gaussian_blur_2d(mask, sigma).clamp(0.0, 1.0)
+            f_seed = (seed + 31337 + i * 1000003) & 0xFFFFFFFFFFFFFFFF
+
+            if canvas_mp <= _FACE_POLISH_CANVAS_MP:
+                pos = _apply_reference(positive_base, cur_lat.clone(), _FACE_POLISH_REF)
+                noise = comfy.sample.prepare_noise(cur_lat, f_seed, None)
+                cur_lat = _do_sample(
+                    guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
+                    model=model, noise=noise,
+                    steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                    positive=pos, negative=negative,
+                    source_latent=cur_lat,
+                    denoise=_FACE_POLISH_DENOISE,
+                    noise_mask=mask,
+                    callback=callback,
+                    disable_pbar=disable_pbar,
+                    seed=f_seed,
+                )
+                px_dirty = True
+            else:
+                pad = _FACE_POLISH_CTX_PAD
+                crop_mp = max(0.05, ((x2 - x1 + 2 * pad) * (y2 - y1 + 2 * pad)) / 1e6)
+                cur_lat, fresh_px = _refine_with_fine_upscaling(
+                    model=model, vae=vae, current=cur_lat,
+                    current_pixels=(None if px_dirty else cur_px), mask=mask,
+                    scale_x=scale_x, scale_y=scale_y,
+                    target_mp=max(1.0, crop_mp * 1.02),  # keep scale > 1 -> crop path
+                    max_linear=8.0, resize_method="lanczos",
+                    context_pad_pixel=pad,
+                    inpainting_mode="Refine",
+                    reference_strength=_FACE_POLISH_REF,
+                    seed=f_seed, steps=steps, cfg=cfg,
+                    sampler_name=sampler_name, scheduler=scheduler,
+                    positive=positive_base, negative=negative,
+                    denoise=_FACE_POLISH_DENOISE,
+                    callback=callback, disable_pbar=disable_pbar,
+                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                )
+                if fresh_px is not None:
+                    cur_px, px_dirty = fresh_px, False
+                else:
+                    px_dirty = True
+
+        if px_dirty:
+            cur_px = _vae_decode(vae, cur_lat)
+        return cur_lat, cur_px, len(faces)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[Angelo face-polish] failed ({e}) — continuing with the unpolished result")
+        return latent, pixels, 0
 
 
 # Direction-aware instruction prepended to the outpaint conditioning when a
@@ -2496,6 +2654,15 @@ class AngeloRefine:
                 callback=callback, disable_pbar=disable_pbar,
                 ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
                 tile_ref=_UPSCALE_TILE_REF, tile_denoise=_UPSCALE_TILE_DENOISE,
+            )
+            # ----- Stage 3: automatic face polish (needs SAM 3) -----
+            up_latent, up_pixels, _nf = _face_polish_pass(
+                model=model, vae=vae, latent=up_latent, pixels=up_pixels,
+                positive_base=up_base, negative=negative,
+                seed=up_seed, steps=steps, cfg=cfg,
+                sampler_name=sampler_name, scheduler=scheduler,
+                callback=callback, disable_pbar=disable_pbar,
+                ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
             )
             previewer = comfy_nodes.PreviewImage()
             ui_up = previewer.save_images(up_pixels, filename_prefix="Angelo_upscale")
