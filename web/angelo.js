@@ -605,12 +605,13 @@ function attachPreviewCanvas(node) {
     node._AngeloQuickFixBtn = quickFixBtn;
 
     const upscaleBtn = makeActionButton("⬆ 2× Restore", () => triggerRestoreUpscale(node), "quickfix");
-    upscaleBtn.title = "2× Restore Upscale — creative upscaling built from the restoration recipe. "
-        + "The image is upscaled 2× in pixel space (lanczos), re-encoded, then restored tile by "
-        + "tile: overlapping ~1MP squares, each at denoise 1.0 anchored to its own content as a "
-        + "reference, composited with feathered seams. The anchor is what stops tiles "
-        + "hallucinating new content and keeps neighbours agreeing — the job tile-ControlNets do "
-        + "in other pipelines.\n\n"
+    upscaleBtn.title = "2× Restore Upscale — TWO-STAGE creative upscaling. Stage 1: the photo is "
+        + "RESTORED globally at native resolution (the model-tuned restore instruction, whole-"
+        + "image context — damage gets one consistent interpretation). Stage 2: the clean image "
+        + "is upscaled 2× in pixel space and refined tile by tile under a \"high quality photo\" "
+        + "prompt — overlapping ~1MP squares, each anchored to its own content as a reference, "
+        + "feathered seams. The anchor stops tiles hallucinating and keeps neighbours agreeing — "
+        + "the job tile-ControlNets do in other pipelines.\n\n"
         + "The result is shown in a review overlay first — Accept commits it as a NEW session "
         + "base (history resets, like Outpaint), Try again re-rolls it, Cancel costs nothing. "
         + "After accepting: use Xtra-Fine for spot edits (it crops, so it stays fast at any "
@@ -4017,7 +4018,7 @@ function triggerRestoreUpscale(node) {
     if (!ws) return;
     node._AngeloPendingOp = "upscale";
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    _angeloToast("⬆ 2× Restore Upscale — restoring tile by tile…");
+    _angeloToast("⬆ 2× Restore Upscale — stage 1: restoring… stage 2: upscaling tile by tile…");
     dbg("queue restore upscale", { upscale_seq: ws.value });
     queuePrompt();
 }

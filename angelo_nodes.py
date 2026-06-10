@@ -852,6 +852,14 @@ _TILE_PX = 1024
 _TILE_OVERLAP_PX = 128
 _QUICK_REFINE_TILE_THRESHOLD_MP = 1.6
 
+# 2× Restore Upscale is TWO-STAGE: restoration is a GLOBAL judgement
+# (dust/fading/casts need one consistent interpretation), so stage 1
+# runs the model-tuned restore instruction at native resolution first;
+# stage 2 then upscales the clean image and the tiles do the only job
+# tiles are good at — rendering known-good content crisply at the new
+# resolution — under this enhancement prompt (both model families).
+_UPSCALE_TILE_PROMPT = "high quality photo"
+
 
 def _apply_reference(positive, ref_latent: torch.Tensor, strength: float):
     """Attach ref_latent as reference_latents at a TRUE fractional strength
@@ -2408,22 +2416,47 @@ class AngeloRefine:
         )
         state["upscale_seq"] = upscale_seq
         if new_upscale:
-            up_prompt = (_QUICK_REFINE_PROMPT_QWEN if current.dim() == 5
-                         else _QUICK_REFINE_PROMPT)
-            if clip is not None:
-                tokens_u = clip.tokenize(up_prompt)
-                up_base = clip.encode_from_tokens_scheduled(tokens_u)
-            else:
-                up_base = positive
             up_seed = int(seed)
             callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
-            up_latent, up_pixels, _n = _tiled_restore_pass(
+            # ----- Stage 1: GLOBAL restoration at native resolution -----
+            # The model-tuned restore instruction, whole-image context (the
+            # tiled engine at scale 1.0 degenerates to a single anchored
+            # pass when the canvas fits one tile). Repair first, with one
+            # consistent global judgement of the damage.
+            restore_prompt = (_QUICK_REFINE_PROMPT_QWEN if current.dim() == 5
+                              else _QUICK_REFINE_PROMPT)
+            if clip is not None:
+                tokens_r = clip.tokenize(restore_prompt)
+                restore_base = clip.encode_from_tokens_scheduled(tokens_r)
+            else:
+                restore_base = positive
+            print("[Angelo 2x-restore] stage 1: global restoration at native resolution")
+            restored_lat, restored_px, _n1 = _tiled_restore_pass(
                 model=model, vae=vae,
                 current=current, current_pixels=current_pixels,
+                scale=1.0,
+                positive_base=restore_base, negative=negative,
+                seed=up_seed, steps=steps, cfg=cfg,
+                sampler_name=sampler_name, scheduler=scheduler,
+                callback=callback, disable_pbar=disable_pbar,
+                ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+            )
+            # ----- Stage 2: 2× upscale + per-tile quality pass -----
+            # The image is clean now; the tiles' only job is rendering it
+            # crisply at the new resolution (enhancement, not restoration).
+            if clip is not None:
+                tokens_u = clip.tokenize(_UPSCALE_TILE_PROMPT)
+                up_base = clip.encode_from_tokens_scheduled(tokens_u)
+            else:
+                up_base = positive
+            print("[Angelo 2x-restore] stage 2: 2x upscale + tiled quality pass")
+            up_latent, up_pixels, _n2 = _tiled_restore_pass(
+                model=model, vae=vae,
+                current=restored_lat, current_pixels=restored_px,
                 scale=2.0,
                 positive_base=up_base, negative=negative,
-                seed=up_seed, steps=steps, cfg=cfg,
+                seed=(up_seed + 777) & 0xFFFFFFFFFFFFFFFF, steps=steps, cfg=cfg,
                 sampler_name=sampler_name, scheduler=scheduler,
                 callback=callback, disable_pbar=disable_pbar,
                 ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
