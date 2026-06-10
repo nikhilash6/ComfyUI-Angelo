@@ -878,9 +878,10 @@ function attachPreviewCanvas(node) {
         + "Review overlay before anything commits — Accept = NEW session base (history resets, like "
         + "Outpaint). After accepting: Xtra-Fine for spot edits; ✨ auto-tiles on big canvases.\n\n"
         + "Finishes with an automatic FACE POLISH (needs the optional SAM 3 Detect install): every "
-        + "face from 250px up to 1MP gets a centred circular refine at ref 0.3 / denoise 0.55 — "
-        + "full-canvas context on small canvases, Xtra-Fine crops above 1.6MP. Skipped silently "
-        + "without SAM 3.\n\n"
+        + "face from 250px up to 1MP gets a centred circular refine at ref 0.75 / denoise 0.7 — "
+        + "anchored hard, because a restoration must not change who the person is. Full-canvas "
+        + "context on small canvases, Xtra-Fine crops above 1.6MP. Skipped silently without "
+        + "SAM 3.\n\n"
         + "Edit models + CLIP; Refine mode only.";
     quickRow.appendChild(upscaleBtn);
     node._AngeloUpscaleBtn = upscaleBtn;
