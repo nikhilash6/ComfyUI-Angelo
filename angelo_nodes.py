@@ -1723,6 +1723,12 @@ class AngeloRefine:
                 # flow — Accept installs it as a fresh session base, since
                 # the dimensions changed). Declared LAST.
                 "upscale_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
+
+                # Which upscale flavour the JS requested: "restore" = the
+                # two-stage pipeline (global restore, then tiled quality
+                # pass); "plain" = stage 2 only — for images that are
+                # already clean and just need size + crispness.
+                "upscale_mode": ("STRING", {"default": "restore", "multiline": False}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1831,6 +1837,7 @@ class AngeloRefine:
         quick_refine_seq=0,
         reference_strength=0.0,
         upscale_seq=0,
+        upscale_mode="restore",
         latent=None,
         clip=None,
         overrides=None,
@@ -2437,24 +2444,29 @@ class AngeloRefine:
             # tiled engine at scale 1.0 degenerates to a single anchored
             # pass when the canvas fits one tile). Repair first, with one
             # consistent global judgement of the damage.
-            restore_prompt = (_QUICK_REFINE_PROMPT_QWEN if current.dim() == 5
-                              else _QUICK_REFINE_PROMPT)
-            if clip is not None:
-                tokens_r = clip.tokenize(restore_prompt)
-                restore_base = clip.encode_from_tokens_scheduled(tokens_r)
+            # "plain" mode (the 2x Upscale button) SKIPS this stage — for
+            # images that are already clean and just need size + crispness.
+            if str(upscale_mode) == "plain":
+                restored_lat, restored_px = current, current_pixels
             else:
-                restore_base = positive
-            print("[Angelo 2x-restore] stage 1: global restoration at native resolution")
-            restored_lat, restored_px, _n1 = _tiled_restore_pass(
-                model=model, vae=vae,
-                current=current, current_pixels=current_pixels,
-                scale=1.0,
-                positive_base=restore_base, negative=negative,
-                seed=up_seed, steps=steps, cfg=cfg,
-                sampler_name=sampler_name, scheduler=scheduler,
-                callback=callback, disable_pbar=disable_pbar,
-                ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
-            )
+                restore_prompt = (_QUICK_REFINE_PROMPT_QWEN if current.dim() == 5
+                                  else _QUICK_REFINE_PROMPT)
+                if clip is not None:
+                    tokens_r = clip.tokenize(restore_prompt)
+                    restore_base = clip.encode_from_tokens_scheduled(tokens_r)
+                else:
+                    restore_base = positive
+                print("[Angelo 2x-restore] stage 1: global restoration at native resolution")
+                restored_lat, restored_px, _n1 = _tiled_restore_pass(
+                    model=model, vae=vae,
+                    current=current, current_pixels=current_pixels,
+                    scale=1.0,
+                    positive_base=restore_base, negative=negative,
+                    seed=up_seed, steps=steps, cfg=cfg,
+                    sampler_name=sampler_name, scheduler=scheduler,
+                    callback=callback, disable_pbar=disable_pbar,
+                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                )
             # ----- Stage 2: 2× upscale + per-tile quality pass -----
             # The image is clean now; the tiles' only job is rendering it
             # crisply at the new resolution (enhancement, not restoration).

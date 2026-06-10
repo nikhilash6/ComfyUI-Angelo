@@ -533,13 +533,16 @@ function attachPreviewCanvas(node) {
     const row2 = makeToolbarRow();
     const outpaintRow = makeToolbarRow(); // Outpaint mode only (populated below)
     outpaintRow.style.display = "none";
+    const quickRow = makeToolbarRow();    // Quick Actions (one-press magic buttons)
     const detectRow = makeToolbarRow();   // SAM 3 detect (Refine + Smart Inpaint)
     detectRow.style.flexWrap = "nowrap";  // keep it one line; the text box flexes
     refineRowsWrap.appendChild(row1);
     refineRowsWrap.appendChild(row2);
     refineRowsWrap.appendChild(outpaintRow);
+    refineRowsWrap.appendChild(quickRow);
     refineRowsWrap.appendChild(detectRow);
     node._AngeloOutpaintRow = outpaintRow;
+    node._AngeloQuickRow = quickRow;
     node._AngeloDetectRow = detectRow;
 
     toggleBarWrap.appendChild(modeRow);
@@ -592,33 +595,6 @@ function attachPreviewCanvas(node) {
     row1.appendChild(varyBtn);
     node._AngeloVaryBtn = varyBtn;
 
-    const quickFixBtn = makeActionButton("✨ Quick Photo Refine", () => triggerQuickPhotoRefine(node), "quickfix");
-    quickFixBtn.title = "One-click photo restoration — a true magic button with its own fixed "
-        + "recipe: whole image, a model-tuned restoration instruction (\"restore the photo\" on FLUX-family; a fuller dust-and-scratches variant on Qwen-Image-Edit, auto-detected), denoise 1.0, reference anchor 1.0 (fully anchored). "
-        + "Identity stays, texture re-renders. NO toolbar box affects it — Denoise, Reference, "
-        + "Area Prompt, toggles: all ignored. Only the Seed applies (leave Ctrl on randomize and "
-        + "mash the button for variations); Undo steps back through passes.\n\n"
-        + "Needs an edit model (FLUX 2 Klein / Qwen-Image-Edit) + a wired CLIP — on non-edit "
-        + "models the reference is ignored, so this REGENERATES the image instead (Undo brings "
-        + "it back). Refine mode only.";
-    row1.appendChild(quickFixBtn);
-    node._AngeloQuickFixBtn = quickFixBtn;
-
-    const upscaleBtn = makeActionButton("⬆ 2× Restore", () => triggerRestoreUpscale(node), "quickfix");
-    upscaleBtn.title = "2× Restore Upscale — TWO-STAGE creative upscaling. Stage 1: the photo is "
-        + "RESTORED globally at native resolution (the model-tuned restore instruction, whole-"
-        + "image context — damage gets one consistent interpretation). Stage 2: the clean image "
-        + "is upscaled 2× in pixel space and refined tile by tile under a \"high quality photo\" "
-        + "prompt — overlapping ~1MP squares, each anchored to its own content as a reference, "
-        + "feathered seams. The anchor stops tiles hallucinating and keeps neighbours agreeing — "
-        + "the job tile-ControlNets do in other pipelines.\n\n"
-        + "The result is shown in a review overlay first — Accept commits it as a NEW session "
-        + "base (history resets, like Outpaint), Try again re-rolls it, Cancel costs nothing. "
-        + "After accepting: use Xtra-Fine for spot edits (it crops, so it stays fast at any "
-        + "canvas size), and ✨ Quick Photo Refine auto-tiles on big canvases.\n\n"
-        + "Edit models + CLIP; Refine mode only. A 1MP source ≈ 9 tiles ≈ 15–20s on Klein.";
-    row1.appendChild(upscaleBtn);
-    node._AngeloUpscaleBtn = upscaleBtn;
 
     row1.appendChild(makeSeparator());
 
@@ -872,6 +848,47 @@ function attachPreviewCanvas(node) {
     methodSelect.title = "Xtra-Fine: pixel-space enlarge method. lanczos = sharpest with mild ringing; bilinear = smooth (great for skin/faces); bicubic = middle; nearest-exact = blocky preserves exact values; bislerp/area = niche. Only used when Xtra-Fine is ON.";
     row2.appendChild(methodSelect);
     node._AngeloMethodSelect = methodSelect;
+
+    // ===== QUICK ACTIONS BAR: one-press magic buttons (Refine mode) =====
+    const qaLabel = document.createElement("span");
+    qaLabel.textContent = "✦ Quick Actions:";
+    qaLabel.style.cssText = "font-size:11px; color:#bbb; padding:0 2px 0 4px; white-space:nowrap;";
+    quickRow.appendChild(qaLabel);
+
+    const quickFixBtn = makeActionButton("✨ Quick Photo Refine", () => triggerQuickPhotoRefine(node), "quickfix");
+    quickFixBtn.title = "One-click photo restoration — a true magic button with its own fixed "
+        + "recipe: whole image, a model-tuned restoration instruction (\"restore the photo\" on "
+        + "FLUX-family; a fuller dust-and-scratches variant on Qwen-Image-Edit, auto-detected), "
+        + "denoise 1.0, reference anchor 1.0 (fully anchored). Identity stays, texture re-renders. "
+        + "NO toolbar box affects it — only the Seed applies (leave Ctrl on randomize and mash for "
+        + "variations); Undo steps back through passes. Auto-tiles on canvases over ~1.6MP.\n\n"
+        + "Needs an edit model (FLUX 2 Klein / Qwen-Image-Edit) + a wired CLIP — on non-edit models "
+        + "the reference is ignored, so this REGENERATES the image instead (Undo brings it back). "
+        + "Refine mode only.";
+    quickRow.appendChild(quickFixBtn);
+    node._AngeloQuickFixBtn = quickFixBtn;
+
+    const upscaleBtn = makeActionButton("⬆ 2× Restore", () => triggerRestoreUpscale(node, "restore"), "quickfix");
+    upscaleBtn.title = "2× Restore Upscale — TWO-STAGE creative upscaling for photos that need "
+        + "repair. Stage 1: the photo is RESTORED globally at native resolution (the model-tuned "
+        + "restore instruction, whole-image context — damage gets one consistent interpretation). "
+        + "Stage 2: the clean image is upscaled 2× in pixel space and refined tile by tile under a "
+        + "\"high quality photo\" prompt — overlapping ~1MP squares, each anchored to its own "
+        + "content as a reference, feathered seams.\n\n"
+        + "Review overlay before anything commits — Accept = NEW session base (history resets, like "
+        + "Outpaint). After accepting: Xtra-Fine for spot edits; ✨ auto-tiles on big canvases.\n\n"
+        + "Edit models + CLIP; Refine mode only.";
+    quickRow.appendChild(upscaleBtn);
+    node._AngeloUpscaleBtn = upscaleBtn;
+
+    const upscalePlainBtn = makeActionButton("⬆ 2× Upscale", () => triggerRestoreUpscale(node, "plain"), "quickfix");
+    upscalePlainBtn.title = "2× Upscale — the same tiled, reference-anchored upscale WITHOUT the "
+        + "restoration pre-pass. For images that are already clean (fresh generations, good "
+        + "photos) and just need size + crispness: 2× pixel upscale, then a \"high quality "
+        + "photo\" pass per ~1MP tile with feathered seams. Same review-before-commit flow as "
+        + "2× Restore. Edit models + CLIP; Refine mode only.";
+    quickRow.appendChild(upscalePlainBtn);
+    node._AngeloUpscalePlainBtn = upscalePlainBtn;
 
     // ===== OUTPAINT ROW: direction + amount (Outpaint mode only) =====
     // Arrows extend the canvas in that direction; "All" pads every side
@@ -4008,7 +4025,7 @@ function triggerQuickPhotoRefine(node) {
 // result is a dimension change, so it rides the same review/accept
 // (pending-base) flow as Outpaint — _AngeloPendingOp tells the shared
 // overlay which op "Try again" should re-fire.
-function triggerRestoreUpscale(node) {
+function triggerRestoreUpscale(node, mode) {
     if (isAnySmartMode(node) || isOutpaintMode(node)) return;  // dimmed there anyway
     if (!node._AngeloImg) {
         _angeloToast("Generate or load an image first");
@@ -4016,10 +4033,14 @@ function triggerRestoreUpscale(node) {
     }
     const ws = findWidget(node, "upscale_seq");
     if (!ws) return;
+    const wm = findWidget(node, "upscale_mode");
+    if (wm) setWidget(wm, mode === "plain" ? "plain" : "restore");
     node._AngeloPendingOp = "upscale";
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    _angeloToast("⬆ 2× Restore Upscale — stage 1: restoring… stage 2: upscaling tile by tile…");
-    dbg("queue restore upscale", { upscale_seq: ws.value });
+    _angeloToast(mode === "plain"
+        ? "⬆ 2× Upscale — upscaling tile by tile…"
+        : "⬆ 2× Restore Upscale — stage 1: restoring… stage 2: upscaling tile by tile…");
+    dbg("queue restore upscale", { upscale_seq: ws.value, mode });
     queuePrompt();
 }
 
@@ -4068,9 +4089,14 @@ function showOutpaintReview(node, ref) {
     // Title follows the pending op — the overlay is shared between
     // Outpaint and 2× Restore Upscale.
     if (node._AngeloOutpaintTitle) {
-        node._AngeloOutpaintTitle.textContent = node._AngeloPendingOp === "upscale"
-            ? "2× Restore Upscale — keep it?"
-            : "Outpaint preview — keep it?";
+        if (node._AngeloPendingOp === "upscale") {
+            const wm = findWidget(node, "upscale_mode");
+            node._AngeloOutpaintTitle.textContent = (wm && wm.value === "plain")
+                ? "2× Upscale — keep it?"
+                : "2× Restore Upscale — keep it?";
+        } else {
+            node._AngeloOutpaintTitle.textContent = "Outpaint preview — keep it?";
+        }
     }
     img.src = makeViewUrl(ref);
     ov.style.display = "flex";
@@ -4490,7 +4516,7 @@ function syncSmartInpaintLockedWidgets(node) {
     _dimControls(node, ["_AngeloRerollBtn", "_AngeloVaryBtn"], outp);
 
     // Quick Photo Refine is a Refine-mode action.
-    _dimControls(node, ["_AngeloQuickFixBtn", "_AngeloUpscaleBtn"], anySmart || outp);
+    _dimControls(node, ["_AngeloQuickRow"], anySmart || outp);
 
     // Outpaint row visibility + input mirrors.
     syncOutpaintControls(node);
@@ -4910,8 +4936,8 @@ function hideMechanicalWidgets(node) {
         "refine_reference", "reference_strength",
         // Quick Photo Refine — driven by the ✨ button
         "quick_refine_seq",
-        // 2× Restore Upscale — driven by the ⬆ button
-        "upscale_seq",
+        // 2× Restore / 2× Upscale — driven by the ⬆ buttons
+        "upscale_seq", "upscale_mode",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
