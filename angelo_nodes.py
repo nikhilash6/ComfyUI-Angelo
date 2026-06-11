@@ -2441,7 +2441,13 @@ class AngeloRefine:
             # anchored to its own content, seams feathered — so the model
             # never samples a latent beyond the size it renders well at.
             canvas_mp = (image_w * image_h) / 1e6 if (image_w > 0 and image_h > 0) else 0.0
-            if canvas_mp > _QUICK_REFINE_TILE_THRESHOLD_MP:
+            # Tiling is for RESTORATION (every tile's job is local). An Area
+            # Prompt is a SEMANTIC edit — changing a person can't be decided
+            # per-tile (each tile would change them differently: the broken
+            # half-swapped result). Area-Prompt mode therefore always runs
+            # the single global pass, like the manual brush does.
+            if (canvas_mp > _QUICK_REFINE_TILE_THRESHOLD_MP
+                    and qp_mode != "Use Area Prompt"):
                 print(f"[Angelo quick-refine] {canvas_mp:.1f}MP canvas — tiled restore pass")
                 qr_refined, qr_pixels, _n = _tiled_restore_pass(
                     model=model, vae=vae,
