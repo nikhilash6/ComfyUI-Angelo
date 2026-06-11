@@ -856,12 +856,13 @@ function attachPreviewCanvas(node) {
     quickRow.appendChild(qaLabel);
 
     const quickFixBtn = makeActionButton("✨ Quick Photo Refine", () => triggerQuickPhotoRefine(node), "quickfix");
-    quickFixBtn.title = "One-click photo restoration — a true magic button with its own fixed "
-        + "recipe: whole image, a model-tuned restoration instruction (\"restore the photo\" on "
-        + "FLUX-family; a fuller dust-and-scratches variant on Qwen-Image-Edit, auto-detected), "
-        + "denoise 1.0, reference anchor 1.0 (fully anchored). Identity stays, texture re-renders. "
-        + "NO toolbar box affects it — only the Seed applies (leave Ctrl on randomize and mash for "
-        + "variations); Undo steps back through passes. Auto-tiles on canvases over ~1.6MP.\n\n"
+    quickFixBtn.title = "One-click photo refine — a true magic button with its own fixed recipe: "
+        + "the WHOLE image runs through the Xtra-Fine pipeline (1.3MP working target — small "
+        + "images get internally supersampled, refined, composited back) with the instruction "
+        + "\"Keep the identity from image 1. make the image high quality.\", reference anchor "
+        + "1.0, denoise 1.0, feather 0. Identity stays, texture re-renders. NO toolbar box "
+        + "affects it — only the Seed applies (leave Ctrl on randomize and mash for variations); "
+        + "Undo steps back through passes. Auto-tiles on canvases over ~1.6MP.\n\n"
         + "Needs an edit model (FLUX 2 Klein / Qwen-Image-Edit) + a wired CLIP — on non-edit models "
         + "the reference is ignored, so this REGENERATES the image instead (Undo brings it back). "
         + "Refine mode only.";

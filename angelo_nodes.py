@@ -836,11 +836,17 @@ def _refine_with_fine_upscaling(
 # gentler instruction than Klein does. Selected at run time by latent
 # dimensionality — Qwen/Wan-family latents are 5D [B,C,T,H,W], the
 # same load-bearing check the inpaint hard-mask logic uses.
-_QUICK_REFINE_PROMPT = "restore the photo"
+_QUICK_REFINE_PROMPT = "Keep the identity from image 1. make the image high quality."
 _QUICK_REFINE_PROMPT_QWEN = ("lightly restore this old photo, remove dust and scratches, "
                              "improve sharpness and contrast, preserve original feel")
 _QUICK_REFINE_DENOISE = 1.0
 _QUICK_REFINE_REF = 1.0
+# ✨ v2 runs the whole image through the XTRA-FINE pipeline: whole-canvas
+# mask, target 1.3MP (small images get internally supersampled to 1.3MP,
+# refined there, composited back), ctx pad 128 (no-op at full coverage),
+# feather 0.
+_QUICK_REFINE_TARGET_MP = 1.3
+_QUICK_REFINE_CTX_PAD = 128
 
 # Large Image Refine (the ▦ button): the canvas is divided into ~_LIR_BOX_MP
 # boxes that EXACT-TILE it (no overlap), each refined through the Xtra-Fine
@@ -2418,27 +2424,35 @@ class AngeloRefine:
                     ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
                 )
             else:
-                # Whole-image reference — IDENTICAL construction to the
-                # manual path (whole canvas painted), at the button's own
-                # fixed strength. Magic button: NO toolbar box affects it
-                # (only the seed, for variation mashing).
-                qr_positive = _apply_reference(qr_base, current.clone(), _QUICK_REFINE_REF)
-                print(f"[Angelo quick-refine] whole-canvas restoration pass, "
+                # ✨ v2: the whole image through the XTRA-FINE pipeline —
+                # whole-canvas mask, full reference anchor, full denoise,
+                # 1.3MP working target (sub-1.3MP canvases get internally
+                # supersampled to 1.3MP, refined there, composited back),
+                # feather 0. Magic button: NO toolbar box affects it (only
+                # the seed, for variation mashing).
+                qr_px_in = current_pixels if current_pixels is not None else _vae_decode(vae, current)
+                Hq, Wq = qr_px_in.shape[1], qr_px_in.shape[2]
+                qr_mask = torch.ones((1, current.shape[-2], current.shape[-1]),
+                                     device=current.device, dtype=torch.float32)
+                print(f"[Angelo quick-refine] whole-image Xtra-Fine pass "
+                      f"({Wq}x{Hq}, target {_QUICK_REFINE_TARGET_MP}MP), "
                       f"denoise={_QUICK_REFINE_DENOISE}, ref={_QUICK_REFINE_REF}, seed={qr_seed}")
-                noise = comfy.sample.prepare_noise(current, qr_seed, None)
-                qr_refined = _do_sample(
-                    guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
-                    model=model, noise=noise,
-                    steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
-                    positive=qr_positive, negative=negative,
-                    source_latent=current,
+                qr_refined, qr_pixels = _refine_with_fine_upscaling(
+                    model=model, vae=vae, current=current, current_pixels=qr_px_in,
+                    mask=qr_mask,
+                    scale_x=current.shape[-1] / Wq, scale_y=current.shape[-2] / Hq,
+                    target_mp=_QUICK_REFINE_TARGET_MP,
+                    max_linear=8.0, resize_method="lanczos",
+                    context_pad_pixel=_QUICK_REFINE_CTX_PAD,
+                    inpainting_mode="Refine",
+                    reference_strength=_QUICK_REFINE_REF,
+                    seed=qr_seed, steps=steps, cfg=cfg,
+                    sampler_name=sampler_name, scheduler=scheduler,
+                    positive=qr_base, negative=negative,
                     denoise=_QUICK_REFINE_DENOISE,
-                    noise_mask=None,   # whole canvas — no mask
-                    callback=callback,
-                    disable_pbar=disable_pbar,
-                    seed=qr_seed,
+                    callback=callback, disable_pbar=disable_pbar,
+                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
                 )
-                qr_pixels = None
             state["history"].append((qr_refined, qr_pixels))
             if len(state["history"]) > _HISTORY_CAP:
                 state["history"] = state["history"][-_HISTORY_CAP:]
