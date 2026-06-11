@@ -3761,6 +3761,18 @@ function showLoadImagePopup(node, file) {
     // Picking the MP field implies the resize choice.
     mpInput.addEventListener("focus", () => { resize.radio.checked = true; });
 
+    // Discoverability: the load dialog is where the restoration workflow
+    // starts, so teach it here.
+    const tip = document.createElement("div");
+    tip.style.cssText = "margin-top:4px; padding:8px 10px; font-size:11.5px; line-height:1.5; "
+        + "color:#ffe9b0; background:rgba(110,85,25,0.25); "
+        + "border:1px solid rgba(240,200,90,0.45); border-radius:5px;";
+    tip.innerHTML = "💡 <b>Low-quality or small photo?</b> Load it at <b>2.5–3 MP</b> with "
+        + "“Resize to”, then press <b>✨ Quick Photo Refine</b> once it's in. The image is "
+        + "rebuilt sharp at the new size, anchored to the original — same person, same scene, "
+        + "real detail.";
+    modal.appendChild(tip);
+
     const footer = document.createElement("div");
     footer.style.cssText = "display:flex; justify-content:flex-end; gap:8px; margin-top:8px;";
     const cancelBtn = document.createElement("button");
