@@ -848,6 +848,18 @@ _QUICK_REFINE_REF = 1.0
 _QUICK_REFINE_TARGET_MP = 1.3
 _QUICK_REFINE_CTX_PAD = 128
 
+# ✨ prompt presets (the selector beside the button). All instruction-
+# register with the image-1 identity clause — the phrasing family testing
+# proved out. "Use Area Prompt" hands the text box over instead (falls
+# back to the default preset when the box is empty).
+_QUICK_REFINE_PROMPTS = {
+    "Identity + Quality": _QUICK_REFINE_PROMPT,
+    "Restore Photo": "Keep the identity from image 1. restore the photo.",
+    "Identity + Colours": ("Keep the identity and colours from image 1. "
+                           "make the image high quality."),
+}
+_QUICK_REFINE_PROMPT_MODES = list(_QUICK_REFINE_PROMPTS.keys()) + ["Use Area Prompt"]
+
 # Large Image Refine (the ▦ button): the canvas is divided into ~_LIR_BOX_MP
 # boxes that EXACT-TILE it (no overlap), each refined through the Xtra-Fine
 # pipeline (bit-exact latent compositing — no pixel feathering anywhere) in
@@ -1756,6 +1768,11 @@ class AngeloRefine:
                 # One history entry for the whole pass. Declared LAST.
                 "lir_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
 
+                # ✨ prompt selector — which preset (or the Area Prompt box)
+                # drives Quick Photo Refine. Declared LAST.
+                "quick_prompt_mode": (_QUICK_REFINE_PROMPT_MODES,
+                                      {"default": "Identity + Quality"}),
+
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1865,6 +1882,7 @@ class AngeloRefine:
         reference_strength=0.0,
         upscale_seq=0,
         lir_seq=0,
+        quick_prompt_mode="Identity + Quality",
         latent=None,
         clip=None,
         overrides=None,
@@ -2392,10 +2410,22 @@ class AngeloRefine:
         )
         state["quick_refine_seq"] = quick_refine_seq
         if new_quick:
-            # Per-model prompt: 5D latent = Qwen/Wan family (fuller, gentler
-            # instruction); 4D = FLUX family ("restore the photo").
-            qr_prompt = (_QUICK_REFINE_PROMPT_QWEN if current.dim() == 5
-                         else _QUICK_REFINE_PROMPT)
+            # Prompt selection: preset from the ✨ selector, or the Area
+            # Prompt text. The default preset keeps the model-tuned Qwen
+            # variant on 5D latents; explicit presets are used verbatim.
+            qp_mode = str(quick_prompt_mode)
+            if qp_mode == "Use Area Prompt" and str(area_text_positive).strip():
+                qr_prompt = str(area_text_positive)
+            elif qp_mode == "Use Area Prompt":
+                print("[Angelo quick-refine] Area Prompt empty — using the default preset")
+                qr_prompt = (_QUICK_REFINE_PROMPT_QWEN if current.dim() == 5
+                             else _QUICK_REFINE_PROMPT)
+            elif qp_mode == "Identity + Quality":
+                qr_prompt = (_QUICK_REFINE_PROMPT_QWEN if current.dim() == 5
+                             else _QUICK_REFINE_PROMPT)
+            else:
+                qr_prompt = _QUICK_REFINE_PROMPTS.get(qp_mode, _QUICK_REFINE_PROMPT)
+            print(f"[Angelo quick-refine] prompt mode: {qp_mode}")
             if clip is not None:
                 tokens_q = clip.tokenize(qr_prompt)
                 qr_base = clip.encode_from_tokens_scheduled(tokens_q)

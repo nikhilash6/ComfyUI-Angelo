@@ -869,6 +869,24 @@ function attachPreviewCanvas(node) {
     quickRow.appendChild(quickFixBtn);
     node._AngeloQuickFixBtn = quickFixBtn;
 
+    const qpWidget = findWidget(node, "quick_prompt_mode");
+    const qpOptions = (qpWidget && qpWidget.options && qpWidget.options.values)
+        ? qpWidget.options.values
+        : ["Identity + Quality", "Restore Photo", "Identity + Colours", "Use Area Prompt"];
+    const quickPromptSelect = makeDropdown("", qpOptions, (val) => {
+        const w = findWidget(node, "quick_prompt_mode");
+        if (w) setWidget(w, val);
+    });
+    quickPromptSelect.title = "Which instruction ✨ Quick Photo Refine runs with:\n"
+        + "• Identity + Quality (default) — 'Keep the identity from image 1. make the image high quality.' "
+        + "(Qwen-Image-Edit gets its tuned dust-and-scratches variant automatically.)\n"
+        + "• Restore Photo — 'Keep the identity from image 1. restore the photo.' For damaged/old photos.\n"
+        + "• Identity + Colours — adds a colour hold for images where the palette must not move.\n"
+        + "• Use Area Prompt — your own text from the Area Prompt box drives the pass "
+        + "(falls back to the default if the box is empty).";
+    quickRow.appendChild(quickPromptSelect);
+    node._AngeloQuickPromptSelect = quickPromptSelect;
+
     const upscaleBtn = makeActionButton("⬆ 2× Pixel", () => triggerPixelUpscale(node), "quickfix");
     upscaleBtn.title = "Pure pixel-space 2× upscale — lanczos, NO AI, deterministic. The image is "
         + "decoded, enlarged 2×, re-encoded, and committed immediately as the session's new base "
@@ -4411,6 +4429,10 @@ function syncRestoreToggle(node) {
     _syncToggle(node._AngeloRestoreToggle, effective, _TOGGLE_ON_COLORS.amber);
 }
 
+function syncQuickPromptSelect(node) {
+    _syncDropdownWrap(node._AngeloQuickPromptSelect, findWidget(node, "quick_prompt_mode")?.value);
+}
+
 function syncReferenceControls(node) {
     // Effective OFF in the Smart modes / Outpaint (their own reference
     // logic) regardless of the stored widget value.
@@ -4770,6 +4792,7 @@ function syncAllToolbarControls(node) {
     syncPaintModeToggle(node);
     syncRestoreToggle(node);
     syncReferenceControls(node);
+    syncQuickPromptSelect(node);
     syncPromptSlotButtons(node);
     syncFineUpscaleToggle(node);
     syncClickRadiusInput(node);
@@ -4934,6 +4957,8 @@ function hideMechanicalWidgets(node) {
         "quick_refine_seq",
         // ⬆ 2× Pixel + ▦ Large Image Refine — driven by their buttons
         "upscale_seq", "lir_seq",
+        // ✨ prompt selector — driven by the dropdown beside the button
+        "quick_prompt_mode",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",
