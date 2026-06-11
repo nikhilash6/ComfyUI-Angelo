@@ -880,7 +880,7 @@ function attachPreviewCanvas(node) {
 
     const lirBtn = makeActionButton("▦ Large Image Refine", () => triggerLargeImageRefine(node), "quickfix");
     lirBtn.title = "Refine a LARGE canvas in one press: the image is divided into ~1MP boxes that "
-        + "exactly tile it, and each box runs an Xtra-Fine refine (ref 0.4, denoise 0.55, 176px "
+        + "exactly tile it, and each box runs an Xtra-Fine refine (ref 0.2, denoise 0.5, 128px "
         + "context pad, hard edges) under the instruction \"restore the image. make it clear and "
         + "sharp.\" — processed in a CHESS pattern, so the second half of the boxes refine with "
         + "already-refined neighbours visible in their context and match them. Compositing is "
