@@ -2177,6 +2177,7 @@ class AngeloRefine:
                 if len(redo) > _HISTORY_CAP:
                     state["redo_stack"] = redo[-_HISTORY_CAP:]
             state["undo_seq"] = undo_seq
+            state["quick_last"] = False
             # Undo is a PURE restore — pop the cached latent and decode it.
             # It must NEVER re-sample, or it would produce a different image
             # than the one being restored. Absorb the current click_seq so
@@ -2203,6 +2204,7 @@ class AngeloRefine:
                 if len(state["history"]) > _HISTORY_CAP:
                     state["history"] = state["history"][-_HISTORY_CAP:]
             state["redo_seq"] = redo_seq
+            state["quick_last"] = False
             state["click_seq"] = click_seq
 
         # ===== Vary pick: commit a chosen variation (pure restore) =====
@@ -2214,6 +2216,7 @@ class AngeloRefine:
         new_vary_pick = vary_pick_seq > 0 and vary_pick_seq != state.get("vary_pick_seq", -1)
         if new_vary_pick:
             state["vary_pick_seq"] = vary_pick_seq
+            state["quick_last"] = False
             cands = state.get("vary_candidates")
             if cands and 0 <= int(vary_pick) < len(cands):
                 state["history"][-1] = cands[int(vary_pick)]
@@ -2410,6 +2413,19 @@ class AngeloRefine:
         )
         state["quick_refine_seq"] = quick_refine_seq
         if new_quick:
+            # Re-roll semantics: if the latest entry is itself a ✨ result,
+            # POP it first — this press re-draws from the same source the
+            # last press used, replacing it, instead of compounding on its
+            # output (anchor-chaining converged to a fixed point and made
+            # mashing for variations useless). Manual edits in between
+            # clear the flag, so they're never discarded.
+            if state.get("quick_last") and len(state["history"]) > 1:
+                state["history"].pop()
+                _hl = state["history"][-1]
+                if isinstance(_hl, tuple):
+                    current, current_pixels = _hl
+                else:
+                    current, current_pixels = _hl, None
             # Prompt selection: preset from the ✨ selector, or the Area
             # Prompt text. The default preset keeps the model-tuned Qwen
             # variant on 5D latents; explicit presets are used verbatim.
@@ -2490,6 +2506,7 @@ class AngeloRefine:
                     ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
                 )
             state["history"].append((qr_refined, qr_pixels))
+            state["quick_last"] = True
             if len(state["history"]) > _HISTORY_CAP:
                 state["history"] = state["history"][-_HISTORY_CAP:]
             state["redo_stack"] = []
@@ -2622,6 +2639,7 @@ class AngeloRefine:
             state["outpaint_pending"] = None
             state["click_seq"] = click_seq
             state["refine_seed_at_run"] = lir_seed
+            state["quick_last"] = False
             current, current_pixels = work_lat, work_px
 
         # Has the user clicked since our last execution for this node?
@@ -2954,6 +2972,7 @@ class AngeloRefine:
                 state["outpaint_pending"] = None
                 state["click_seq"] = click_seq
                 state["refine_seed_at_run"] = int(seed)
+                state["quick_last"] = False
                 current = refined
                 current_pixels = refined_pixels
 
