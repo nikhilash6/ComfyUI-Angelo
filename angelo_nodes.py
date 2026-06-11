@@ -851,8 +851,8 @@ _QUICK_REFINE_REF = 1.0
 # shared source at this denoise, the ctx pad's cross-border visibility,
 # and the chess ordering.
 _LIR_PROMPT = "restore the image. make it clear and sharp."
-_LIR_REF = 0.4
-_LIR_DENOISE = 0.55
+_LIR_REF = 0.2
+_LIR_DENOISE = 0.5
 _LIR_CTX_PAD = 128
 _LIR_BOX_MP = 1.3   # target box area — the tweakable knob
 
@@ -1750,13 +1750,6 @@ class AngeloRefine:
                 # One history entry for the whole pass. Declared LAST.
                 "lir_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
 
-                # TEMP — Large Image Refine tuning knobs (driven by the
-                # small inputs beside the ▦ button). Here to dial in the
-                # recipe; remove once the numbers are settled (fold the
-                # winners back into the _LIR_* constants).
-                "lir_ref": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 1.0, "step": 0.05}),
-                "lir_ctx_pad": ("INT", {"default": 128, "min": 0, "max": 512, "step": 8}),
-                "lir_denoise": ("FLOAT", {"default": 0.55, "min": 0.05, "max": 1.0, "step": 0.05}),
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1866,9 +1859,6 @@ class AngeloRefine:
         reference_strength=0.0,
         upscale_seq=0,
         lir_seq=0,
-        lir_ref=0.4,
-        lir_ctx_pad=128,
-        lir_denoise=0.55,
         latent=None,
         clip=None,
         overrides=None,
@@ -2543,20 +2533,16 @@ class AngeloRefine:
             # Chess order: one colour, then the other.
             order = ([b for b in boxes if (b[0] + b[1]) % 2 == 0]
                      + [b for b in boxes if (b[0] + b[1]) % 2 == 1])
-            # TEMP: live tuning knobs override the _LIR_* constants.
-            lir_ref_v = max(0.0, min(1.0, float(lir_ref)))
-            lir_pad_v = max(0, int(lir_ctx_pad))
-            lir_den_v = max(0.05, min(1.0, float(lir_denoise)))
             print(f"[Angelo large-refine] {W_pix}x{H_pix}: {nx}x{ny} boxes "
-                  f"(~{_LIR_BOX_MP}MP target), chess order, ref={lir_ref_v}, "
-                  f"denoise={lir_den_v}, pad={lir_pad_v}px, feather 0")
+                  f"(~{_LIR_BOX_MP}MP target), chess order, ref={_LIR_REF}, "
+                  f"denoise={_LIR_DENOISE}, pad={_LIR_CTX_PAD}px, feather 0")
             work_lat, work_px = current, lir_px
             for k, (bi, bj, x0, y0, x1, y1) in enumerate(order):
                 box_mask = torch.zeros((1, nlh, nlw), device=work_lat.device, dtype=torch.float32)
                 box_mask[0, y0:y1, x0:x1] = 1.0   # hard box — feather 0
                 bw_px = (x1 - x0) / sx
                 bh_px = (y1 - y0) / sy
-                crop_mp = max(0.05, ((bw_px + 2 * lir_pad_v) * (bh_px + 2 * lir_pad_v)) / 1e6)
+                crop_mp = max(0.05, ((bw_px + 2 * _LIR_CTX_PAD) * (bh_px + 2 * _LIR_CTX_PAD)) / 1e6)
                 work_lat, fresh_px = _refine_with_fine_upscaling(
                     model=model, vae=vae, current=work_lat,
                     current_pixels=work_px, mask=box_mask,
@@ -2564,13 +2550,13 @@ class AngeloRefine:
                     target_mp=crop_mp * 1.02,   # force the crop path — never
                                                 # the whole-canvas shortcut
                     max_linear=8.0, resize_method="lanczos",
-                    context_pad_pixel=lir_pad_v,
+                    context_pad_pixel=_LIR_CTX_PAD,
                     inpainting_mode="Refine",
-                    reference_strength=lir_ref_v,
+                    reference_strength=_LIR_REF,
                     seed=(lir_seed + k * 9973) & 0xFFFFFFFFFFFFFFFF,
                     steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
                     positive=lir_base, negative=negative,
-                    denoise=lir_den_v,
+                    denoise=_LIR_DENOISE,
                     callback=callback, disable_pbar=disable_pbar,
                     ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
                 )
