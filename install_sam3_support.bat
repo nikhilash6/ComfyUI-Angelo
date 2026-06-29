@@ -36,18 +36,43 @@ if errorlevel 1 (
   goto :fail
 )
 
+REM Pin numpy to whatever this env already has, so nothing installed below
+REM can downgrade it (a pinned numpy in the deps used to drag ComfyUI's
+REM numpy 2.x down to 1.26 and break it - issue #31). An empty constraints
+REM file is harmless if numpy somehow isn't present yet.
+set "CONSTRAINTS=%TEMP%\angelo_sam3_constraints.txt"
+type nul > "%CONSTRAINTS%"
+"%PY%" -c "import numpy; v=numpy.__version__; open(r'%CONSTRAINTS%','a').write('numpy>='+v+'\n'); print('Pinning numpy>='+v+' so the SAM 3 deps cannot downgrade it.')" 2>nul
+
 "%PY%" -c "import sam3" 1>nul 2>nul
 if not errorlevel 1 (
-  echo SAM 3 is already installed in this environment - nothing to do.
+  echo SAM 3 is already installed in this environment.
+  echo Applying Angelo's SAM 3.1 dtype fix if needed...
+  "%PY%" "sam3_postinstall.py"
   echo Restart ComfyUI and use the Detect button in Angelo.
   goto :done
 )
 
 echo Installing SAM 3 runtime dependencies...
-"%PY%" -m pip install -r "sam3_requirements.txt"
+"%PY%" -m pip install -r "sam3_requirements.txt" -c "%CONSTRAINTS%"
 if errorlevel 1 (
   echo Dependency install failed.
   goto :fail
+)
+
+REM OpenCV (cv2) - only install if it isn't already importable, so we don't
+REM clobber a full opencv-python another node already provides. Headless
+REM avoids pulling GUI/Qt deps we don't need for the image path.
+"%PY%" -c "import cv2" 1>nul 2>nul
+if errorlevel 1 (
+  echo Installing opencv-python-headless ^(cv2 not found^)...
+  "%PY%" -m pip install "opencv-python-headless>=4.8.0" -c "%CONSTRAINTS%"
+  if errorlevel 1 (
+    echo OpenCV install failed.
+    goto :fail
+  )
+) else (
+  echo cv2 already available - leaving OpenCV as-is.
 )
 
 if not exist "sam3" (
@@ -67,6 +92,9 @@ if errorlevel 1 (
   echo SAM 3 install failed.
   goto :fail
 )
+
+echo Applying Angelo's SAM 3.1 dtype fix...
+"%PY%" "sam3_postinstall.py"
 
 echo.
 echo Done. Start ComfyUI again, then use the Detect button in Angelo.

@@ -34,14 +34,38 @@ fi
 echo "Angelo SAM 3 installer — using Python: $PY"
 "$PY" --version || { echo "Python not found. Set PYTHON to your ComfyUI python and retry."; exit 1; }
 
+# Pin numpy to whatever this env already has, so nothing installed below can
+# downgrade it (a pinned numpy in the deps used to drag ComfyUI's numpy 2.x
+# down to 1.26 and break it — issue #31). An empty constraints file is
+# harmless if numpy somehow isn't present yet.
+CONSTRAINTS="$(mktemp -t angelo_sam3_constraints.XXXXXX 2>/dev/null || echo "${TMPDIR:-/tmp}/angelo_sam3_constraints.txt")"
+: > "$CONSTRAINTS"
+NPVER="$("$PY" -c 'import numpy,sys;sys.stdout.write(numpy.__version__)' 2>/dev/null || true)"
+if [ -n "$NPVER" ]; then
+  echo "numpy>=$NPVER" >> "$CONSTRAINTS"
+  echo "Pinning numpy>=$NPVER so the SAM 3 deps cannot downgrade it."
+fi
+
 if "$PY" -c "import sam3" >/dev/null 2>&1; then
-  echo "SAM 3 is already installed in this environment — nothing to do."
+  echo "SAM 3 is already installed in this environment."
+  echo "Applying Angelo's SAM 3.1 dtype fix if needed..."
+  "$PY" sam3_postinstall.py
   echo "Restart ComfyUI and use the Detect button in Angelo."
   exit 0
 fi
 
 echo "Installing SAM 3 runtime dependencies..."
-"$PY" -m pip install -r sam3_requirements.txt
+"$PY" -m pip install -r sam3_requirements.txt -c "$CONSTRAINTS"
+
+# OpenCV (cv2) — only install if it isn't already importable, so we don't
+# clobber a full opencv-python another node already provides. Headless
+# avoids pulling GUI/Qt deps we don't need for the image path.
+if "$PY" -c "import cv2" >/dev/null 2>&1; then
+  echo "cv2 already available — leaving OpenCV as-is."
+else
+  echo "Installing opencv-python-headless (cv2 not found)..."
+  "$PY" -m pip install "opencv-python-headless>=4.8.0" -c "$CONSTRAINTS"
+fi
 
 if [ ! -d sam3 ]; then
   echo "Cloning SAM 3 from GitHub..."
@@ -53,6 +77,9 @@ fi
 
 echo "Installing SAM 3 (editable, no deps)..."
 "$PY" -m pip install -e sam3 --no-deps
+
+echo "Applying Angelo's SAM 3.1 dtype fix..."
+"$PY" sam3_postinstall.py
 
 echo ""
 echo "Done. Restart ComfyUI, then use the Detect button in Angelo."
