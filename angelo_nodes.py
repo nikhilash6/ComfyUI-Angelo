@@ -860,19 +860,18 @@ _QUICK_REFINE_PROMPTS = {
 }
 _QUICK_REFINE_PROMPT_MODES = list(_QUICK_REFINE_PROMPTS.keys()) + ["Use Area Prompt"]
 
-# Large Image Refine (the ▦ button): the canvas is divided into ~_LIR_BOX_MP
-# boxes that EXACT-TILE it (no overlap), each refined through the Xtra-Fine
-# pipeline (bit-exact latent compositing — no pixel feathering anywhere) in
-# CHESS-PATTERN order: one colour first, then the other, so second-pass
-# boxes refine with already-refined neighbours visible in their context
-# pad and match them. Hard box masks (feather 0); seam defences are the
-# shared source at this denoise, the ctx pad's cross-border visibility,
-# and the chess ordering.
+# Large Image Refine (the ▦ button): the whole canvas refined through the
+# shared OVERLAPPING tiled engine (_tiled_restore_pass) — feathered ramp
+# blend + one shared noise field — with its dual offset grid on, so a
+# second tile grid centred on the first grid's seams erases them. (The
+# earlier design exact-tiled the canvas into hard-edged chess-ordered boxes
+# with bit-exact latent compositing; that left visible seams because the
+# boundaries were hard and each box used decorrelated noise. The overlapping
+# engine fixes both.) Just the recipe knobs live here now; tile size and
+# overlap are the engine's (_TILE_PX / _tile_min_overlap_px).
 _LIR_PROMPT = "restore the image. make it clear and sharp."
 _LIR_REF = 0.2
 _LIR_DENOISE = 0.5
-_LIR_CTX_PAD = 128
-_LIR_BOX_MP = 1.3   # target box area — the tweakable knob
 
 # Tiled restore engine (2× Restore Upscale + big-canvas Quick Refine).
 # Working tile size + overlap in PIXELS: tiles are sampled at ~1MP no
@@ -965,6 +964,7 @@ def _tiled_restore_pass(
     ov_sigmas=None,
     tile_ref: float = _QUICK_REFINE_REF,
     tile_denoise: float = _QUICK_REFINE_DENOISE,
+    dual_grid: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
     """The tiled restore engine: the Quick Photo Refine recipe run over
     overlapping ~1MP tiles, so the model never samples a latent bigger
@@ -1042,41 +1042,60 @@ def _tiled_restore_pass(
         r[-n:] = torch.minimum(r[-n:], fade.flip(0))
         return r
 
-    idx = 0
-    for y0 in ys:
-        for x0 in xs:
-            tw = min(tile_lx, nlw - x0)
-            th = min(tile_ly, nlh - y0)
-            tile_lat = big_latent[..., y0:y0 + th, x0:x0 + tw].clone().contiguous()
-            tile_pos = _apply_reference(positive_base, tile_lat.clone(), tile_ref)
-            tile_seed = int(seed)
-            noise = global_noise[..., y0:y0 + th, x0:x0 + tw].clone().contiguous()
-            refined = _do_sample(
-                guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
-                model=model, noise=noise,
-                steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
-                positive=tile_pos, negative=negative,
-                source_latent=tile_lat,
-                denoise=tile_denoise,
-                noise_mask=None,
-                callback=callback,
-                disable_pbar=disable_pbar,
-                seed=tile_seed,
-            )
-            tile_px = _vae_decode(vae, refined).to(big_pixels.device, big_pixels.dtype)
+    def _accumulate(xs_grid, ys_grid):
+        for y0 in ys_grid:
+            for x0 in xs_grid:
+                tw = min(tile_lx, nlw - x0)
+                th = min(tile_ly, nlh - y0)
+                tile_lat = big_latent[..., y0:y0 + th, x0:x0 + tw].clone().contiguous()
+                tile_pos = _apply_reference(positive_base, tile_lat.clone(), tile_ref)
+                noise = global_noise[..., y0:y0 + th, x0:x0 + tw].clone().contiguous()
+                refined = _do_sample(
+                    guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
+                    model=model, noise=noise,
+                    steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                    positive=tile_pos, negative=negative,
+                    source_latent=tile_lat,
+                    denoise=tile_denoise,
+                    noise_mask=None,
+                    callback=callback,
+                    disable_pbar=disable_pbar,
+                    seed=int(seed),
+                )
+                tile_px = _vae_decode(vae, refined).to(big_pixels.device, big_pixels.dtype)
 
-            py0, px0 = y0 * ppl_y, x0 * ppl_x
-            pth, ptw = tile_px.shape[1], tile_px.shape[2]
-            wy = _ramp(pth, min_ov_px, big_pixels.device)
-            wx = _ramp(ptw, min_ov_px, big_pixels.device)
-            w = (wy.view(1, -1, 1, 1) * wx.view(1, 1, -1, 1)).to(big_pixels.dtype)
-            out[:, py0:py0 + pth, px0:px0 + ptw, :] += tile_px * w
-            wsum[:, py0:py0 + pth, px0:px0 + ptw, :] += w
-            idx += 1
+                py0, px0 = y0 * ppl_y, x0 * ppl_x
+                pth, ptw = tile_px.shape[1], tile_px.shape[2]
+                wy = _ramp(pth, min_ov_px, big_pixels.device)
+                wx = _ramp(ptw, min_ov_px, big_pixels.device)
+                w = (wy.view(1, -1, 1, 1) * wx.view(1, 1, -1, 1)).to(big_pixels.dtype)
+                out[:, py0:py0 + pth, px0:px0 + ptw, :] += tile_px * w
+                wsum[:, py0:py0 + pth, px0:px0 + ptw, :] += w
+
+    _accumulate(xs, ys)
+
+    # Seam-erase pass: a SECOND tile grid offset by ~half a tile, so its
+    # tiles are CENTRED on the first grid's seams (a tile start at the
+    # midpoint of two grid-A starts puts the new tile's centre on the seam
+    # between them). Both grids refine the same source and accumulate into
+    # the same weighted-blend buffers, so where grid A is weakest — its seam
+    # lines, where its tiles taper to low ramp weight — the offset tiles sit
+    # at full weight and dominate, and vice versa. Any residual seam from one
+    # grid is overwritten by the other grid's continuous tile interior.
+    # Costs a second set of tiles (~2× sampling). Skipped when a tiny canvas
+    # produced a single tile on either axis (nothing to offset).
+    offset_tiles = 0
+    if dual_grid and len(xs) > 1 and len(ys) > 1:
+        xs_b = [round((xs[i] + xs[i + 1]) / 2) for i in range(len(xs) - 1)]
+        ys_b = [round((ys[i] + ys[i + 1]) / 2) for i in range(len(ys) - 1)]
+        offset_tiles = len(xs_b) * len(ys_b)
+        print(f"[Angelo tiled-restore] seam-erase pass: offset grid "
+              f"{len(xs_b)}x{len(ys_b)} ({offset_tiles} tiles)")
+        _accumulate(xs_b, ys_b)
 
     final_pixels = out / wsum.clamp(min=1e-6)
     final_latent = _vae_encode(vae, final_pixels)
-    return final_latent, final_pixels, n_tiles
+    return final_latent, final_pixels, n_tiles + offset_tiles
 
 
 # Direction-aware instruction prepended to the outpaint conditioning when a
@@ -2474,6 +2493,7 @@ class AngeloRefine:
                     sampler_name=sampler_name, scheduler=scheduler,
                     callback=callback, disable_pbar=disable_pbar,
                     ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                    dual_grid=True,   # seam-erase offset grid (option 4)
                 )
             else:
                 # ✨ v2: the whole image through the XTRA-FINE pipeline —
@@ -2564,12 +2584,12 @@ class AngeloRefine:
             state = _STATE[node_id]
             current, current_pixels = up_latent, up_pixels
 
-        # ===== ▦ Large Image Refine: chess-pattern Xtra-Fine boxes =====
-        # The whole canvas refined box by box through the Xtra-Fine
-        # pipeline — bit-exact latent compositing per box, no pixel
-        # feathering. Chess order so the second colour's boxes see
-        # already-refined neighbours in their context pad. One history
-        # entry for the whole pass (one Undo reverts it all).
+        # ===== ▦ Large Image Refine: overlapping tiled engine =====
+        # The whole canvas refined through the shared overlapping tiled
+        # engine (feathered ramp blend + one shared noise field) with its
+        # dual offset grid on, so a second tile grid centred on the first
+        # grid's seams erases them. One history entry for the whole pass
+        # (one Undo reverts it all).
         new_lir = (
             inpainting_mode == "Refine"
             and lir_seq > 0
@@ -2585,52 +2605,24 @@ class AngeloRefine:
             lir_seed = int(seed)
             callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
-            lir_px = current_pixels if current_pixels is not None else _vae_decode(vae, current)
-            H_pix, W_pix = lir_px.shape[1], lir_px.shape[2]
-            nlh, nlw = current.shape[-2], current.shape[-1]
-            sx = nlw / W_pix
-            sy = nlh / H_pix
-            box_edge = math.sqrt(_LIR_BOX_MP * 1e6)
-            nx = max(1, round(W_pix / box_edge))
-            ny = max(1, round(H_pix / box_edge))
-            x_edges = [round(i * nlw / nx) for i in range(nx + 1)]
-            y_edges = [round(j * nlh / ny) for j in range(ny + 1)]
-            boxes = [(i, j, x_edges[i], y_edges[j], x_edges[i + 1], y_edges[j + 1])
-                     for j in range(ny) for i in range(nx)]
-            # Chess order: one colour, then the other.
-            order = ([b for b in boxes if (b[0] + b[1]) % 2 == 0]
-                     + [b for b in boxes if (b[0] + b[1]) % 2 == 1])
-            print(f"[Angelo large-refine] {W_pix}x{H_pix}: {nx}x{ny} boxes "
-                  f"(~{_LIR_BOX_MP}MP target), chess order, ref={_LIR_REF}, "
-                  f"denoise={_LIR_DENOISE}, pad={_LIR_CTX_PAD}px, feather 0")
-            work_lat, work_px = current, lir_px
-            for k, (bi, bj, x0, y0, x1, y1) in enumerate(order):
-                box_mask = torch.zeros((1, nlh, nlw), device=work_lat.device, dtype=torch.float32)
-                box_mask[0, y0:y1, x0:x1] = 1.0   # hard box — feather 0
-                bw_px = (x1 - x0) / sx
-                bh_px = (y1 - y0) / sy
-                crop_mp = max(0.05, ((bw_px + 2 * _LIR_CTX_PAD) * (bh_px + 2 * _LIR_CTX_PAD)) / 1e6)
-                work_lat, fresh_px = _refine_with_fine_upscaling(
-                    model=model, vae=vae, current=work_lat,
-                    current_pixels=work_px, mask=box_mask,
-                    scale_x=sx, scale_y=sy,
-                    target_mp=crop_mp * 1.02,   # force the crop path — never
-                                                # the whole-canvas shortcut
-                    max_linear=8.0, resize_method="lanczos",
-                    context_pad_pixel=_LIR_CTX_PAD,
-                    inpainting_mode="Refine",
-                    reference_strength=_LIR_REF,
-                    seed=(lir_seed + k * 9973) & 0xFFFFFFFFFFFFFFFF,
-                    steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
-                    positive=lir_base, negative=negative,
-                    denoise=_LIR_DENOISE,
-                    callback=callback, disable_pbar=disable_pbar,
-                    ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
-                )
-                if fresh_px is None:
-                    work_px = _vae_decode(vae, work_lat)
-                else:
-                    work_px = fresh_px
+            print(f"[Angelo large-refine] overlapping tiled engine "
+                  f"(ref={_LIR_REF}, denoise={_LIR_DENOISE}), seam-erase dual grid")
+            # Option 1: route through the shared overlapping tiled engine
+            # (feathered ramp blend + one shared noise field) instead of the
+            # old exact-tile hard-mask boxes, and run its dual offset grid
+            # (option 4) to erase residual seams. scale=1.0 = refine in place.
+            work_lat, work_px, _ = _tiled_restore_pass(
+                model=model, vae=vae,
+                current=current, current_pixels=current_pixels,
+                scale=1.0,
+                positive_base=lir_base, negative=negative,
+                seed=lir_seed, steps=steps, cfg=cfg,
+                sampler_name=sampler_name, scheduler=scheduler,
+                callback=callback, disable_pbar=disable_pbar,
+                ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                tile_ref=_LIR_REF, tile_denoise=_LIR_DENOISE,
+                dual_grid=True,
+            )
             state["history"].append((work_lat, work_px))
             if len(state["history"]) > _HISTORY_CAP:
                 state["history"] = state["history"][-_HISTORY_CAP:]
