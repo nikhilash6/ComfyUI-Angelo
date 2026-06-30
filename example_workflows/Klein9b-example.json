@@ -314,6 +314,189 @@
       ]
     },
     {
+      "id": 1037,
+      "type": "SaveImage",
+      "pos": [
+        -21073.307413608174,
+        -686.2511618906663
+      ],
+      "size": [
+        979.5016155316771,
+        1048.0999695213866
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 2745
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.21.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "ComfyUI"
+      ]
+    },
+    {
+      "id": 1113,
+      "type": "AngeloRefine",
+      "pos": [
+        -22162.429810013673,
+        -686.9912448756664
+      ],
+      "size": [
+        1072.0401681519688,
+        1057.207198089973
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 2739
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 2746
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 2747
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 2743
+        },
+        {
+          "name": "clip",
+          "shape": 7,
+          "type": "CLIP",
+          "link": 2744
+        },
+        {
+          "name": "latent",
+          "shape": 7,
+          "type": "LATENT",
+          "link": 2742
+        },
+        {
+          "name": "overrides",
+          "shape": 7,
+          "type": "ANGELO_OVERRIDES",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            2745
+          ]
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": null
+        },
+        {
+          "name": "source_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-angelo",
+        "ver": "769877b2b650d7adeee67fa6c79e7cfafa8ae153",
+        "Node name for S&R": "AngeloRefine",
+        "aux_id": "shootthesound/ComfyUI-Angelo"
+      },
+      "widgets_values": [
+        "Sampler Mode",
+        1,
+        4628594981864737,
+        "fixed",
+        0,
+        "randomize",
+        4,
+        1,
+        "euler",
+        "simple",
+        0.5,
+        96,
+        24,
+        912,
+        977,
+        2,
+        1488,
+        1488,
+        0,
+        false,
+        true,
+        false,
+        1,
+        8,
+        "lanczos",
+        "Refine",
+        "(none)",
+        64,
+        false,
+        false,
+        "",
+        "",
+        false,
+        "",
+        "",
+        "",
+        0,
+        "keep",
+        1.5,
+        "",
+        0,
+        "",
+        0,
+        false,
+        "",
+        0,
+        -1,
+        0,
+        0,
+        "right",
+        256,
+        64,
+        0,
+        "",
+        "prepend",
+        false,
+        0,
+        0,
+        0,
+        "Identity + Quality",
+        0,
+        0.5,
+        false,
+        ""
+      ]
+    },
+    {
       "id": 989,
       "type": "CLIPTextEncode",
       "pos": [
@@ -359,146 +542,10 @@
         "secondTabWidth": 65
       },
       "widgets_values": [
-        "classy style, sier chrome, vintage car on a airport runway, fallout style"
+        "classy style, silver chrome, vintage car on a airport runway, fallout style"
       ],
       "color": "#232",
       "bgcolor": "#353"
-    },
-    {
-      "id": 1113,
-      "type": "AngeloRefine",
-      "pos": [
-        -22162.429810013673,
-        -686.9912448756664
-      ],
-      "size": [
-        774.8534246842355,
-        1062.2159634293168
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 2739
-        },
-        {
-          "name": "positive",
-          "type": "CONDITIONING",
-          "link": 2746
-        },
-        {
-          "name": "negative",
-          "type": "CONDITIONING",
-          "link": 2747
-        },
-        {
-          "name": "latent",
-          "type": "LATENT",
-          "link": 2742
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 2743
-        },
-        {
-          "name": "clip",
-          "shape": 7,
-          "type": "CLIP",
-          "link": 2744
-        }
-      ],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            2745
-          ]
-        },
-        {
-          "name": "latent",
-          "type": "LATENT",
-          "links": null
-        }
-      ],
-      "properties": {
-        "aux_id": "shootthesound/ComfyUI-Angelo",
-        "ver": "769877b2b650d7adeee67fa6c79e7cfafa8ae153",
-        "Node name for S&R": "AngeloRefine"
-      },
-      "widgets_values": [
-        "Sampler Mode",
-        1,
-        4628594981864738,
-        "fixed",
-        0,
-        "randomize",
-        4,
-        1,
-        "euler",
-        "simple",
-        0.5,
-        96,
-        24,
-        912,
-        977,
-        2,
-        1488,
-        1488,
-        0,
-        false,
-        true,
-        false,
-        1,
-        8,
-        "lanczos",
-        "Refine",
-        "(none)",
-        64,
-        false,
-        false,
-        "",
-        "",
-        false,
-        "",
-        "",
-        ""
-      ]
-    },
-    {
-      "id": 1037,
-      "type": "SaveImage",
-      "pos": [
-        -21365.485391736467,
-        -674.5640427655305
-      ],
-      "size": [
-        530.3823234371812,
-        478.77030928263616
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 2745
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.21.1",
-        "Node name for S&R": "SaveImage"
-      },
-      "widgets_values": [
-        "ComfyUI"
-      ]
     }
   ],
   "links": [
@@ -539,7 +586,7 @@
       997,
       0,
       1113,
-      3,
+      5,
       "LATENT"
     ],
     [
@@ -547,7 +594,7 @@
       914,
       0,
       1113,
-      4,
+      3,
       "VAE"
     ],
     [
@@ -555,7 +602,7 @@
       913,
       0,
       1113,
-      5,
+      4,
       "CLIP"
     ],
     [
@@ -595,13 +642,13 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.876922695000006,
+      "scale": 0.6588450000000013,
       "offset": [
-        23691.17252681624,
-        1156.5375893466444
+        23236.202454609294,
+        1126.9778272681267
       ]
     },
-    "frontendVersion": "1.43.18",
+    "frontendVersion": "1.45.19",
     "workflowRendererVersion": "LG",
     "groupNodes": {},
     "ue_links": [],
