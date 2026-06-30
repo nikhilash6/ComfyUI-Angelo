@@ -1340,7 +1340,8 @@ def _encode_loaded_image(vae, ref_json: str, resize_mode: str, target_mp: float)
     input-dir filename). resize_mode is "keep" (native res) or "mp"
     (scaled to ~target_mp megapixels). In both cases dimensions are
     rounded to a multiple of 16 so any supported VAE (8x or 16x) is
-    happy. Returns the latent samples tensor.
+    happy. Returns (latent samples, original pixels) — the pixels so a
+    freshly loaded image previews as ITSELF, not its VAE round-trip.
     """
     import numpy as np
     from PIL import Image, ImageOps
@@ -1387,7 +1388,11 @@ def _encode_loaded_image(vae, ref_json: str, resize_mode: str, target_mp: float)
     arr = np.array(img).astype(np.float32) / 255.0      # (H, W, 3)
     pixels = torch.from_numpy(arr)[None, ...]            # (1, H, W, 3)
     samples = _vae_encode(vae, pixels[:, :, :, :3])
-    return samples
+    # Hand back the ORIGINAL pixels (matched to the latent's device) so the
+    # load previews the real file. The VAE round-trip is near-lossless on
+    # small images — looks like a plain load — but visibly lossy on large
+    # ones, which reads as "it edited my image on load".
+    return samples, pixels[:, :, :, :3].to(samples.device)
 
 
 def _decode_to_preview(vae, latent_samples: torch.Tensor):
@@ -1987,8 +1992,9 @@ class AngeloRefine:
             state is None or state.get("loaded_seq") != loaded_seq
         )
         forced_base = None
+        forced_pixels = None
         if new_loaded:
-            forced_base = _encode_loaded_image(
+            forced_base, forced_pixels = _encode_loaded_image(
                 vae, loaded_ref, str(loaded_resize_mode), float(loaded_target_mp)
             )
 
@@ -2196,7 +2202,11 @@ class AngeloRefine:
             # base. The user's next genuine click bumps click_seq and fires
             # normally.
             _STATE[node_id] = {
-                "history": [(incoming.clone(), None)],
+                # On a fresh LOAD, pair the base latent with the real loaded
+                # pixels (forced_pixels) so the preview is the file itself,
+                # not its VAE round-trip. Other resets have no pixels → None,
+                # and the preview decodes the latent as before.
+                "history": [(incoming.clone(), forced_pixels)],
                 "click_seq": click_seq,
                 "undo_seq": undo_seq,
                 # Anchor every action-seq (see the Sampler Mode dict note).
@@ -2213,9 +2223,11 @@ class AngeloRefine:
                 "fingerprint": incoming_fp,
                 "loaded_seq": loaded_seq,
                 # Source image (#3/#9): capture the base once, independent of
-                # history[0] (which mutates under _HISTORY_CAP eviction).
+                # history[0] (which mutates under _HISTORY_CAP eviction). On a
+                # load this is the real loaded image, so hold-to-compare and
+                # the source_image output show the file, not a round-trip.
                 "source_latent": incoming.clone(),
-                "source_pixels": None,
+                "source_pixels": forced_pixels,
             }
             state = _STATE[node_id]
 
