@@ -887,6 +887,11 @@ function attachPreviewCanvas(node) {
     quickRow.appendChild(quickPromptSelect);
     node._AngeloQuickPromptSelect = quickPromptSelect;
 
+    // Separator after the prompt dropdown — it belongs to Quick Photo
+    // Refine, so the pipe groups the two together and sets them apart from
+    // the upscale buttons that follow.
+    quickRow.appendChild(makeSeparator());
+
     const upscaleBtn = makeActionButton("⬆ 2× Pixel", () => triggerPixelUpscale(node), "quickfix");
     upscaleBtn.title = "Pure pixel-space 2× upscale — lanczos, NO AI, deterministic. The image is "
         + "decoded, enlarged 2×, re-encoded, and committed immediately as the session's new base "
