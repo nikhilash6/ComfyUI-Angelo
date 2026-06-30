@@ -492,10 +492,22 @@ def _resize_latent(t: torch.Tensor, target_h: int, target_w: int, method: str) -
 # of the node — and PIL's previewer — expect to be absent ([B, C, H, W]).
 # Both helpers are thin pass-throughs today; this is the seam where that
 # 5D normalisation will land without disturbing any caller.
+# Above this output megapixel count, route VAE encode/decode through the
+# TILED path. A single whole-canvas VAE pass at very large sizes (e.g. a
+# 7744x2176 = 16.8MP canvas) can OOM or numerically overflow to NaN — which
+# is silent (no exception), poisons everything downstream, and shows up as a
+# black image. Tiling keeps each VAE pass small. Below the threshold we use
+# the plain (exact, faster) path; ~1.4k tiles and normal canvases stay plain.
+_VAE_TILE_MP = 4.0
+
+
 def _vae_decode(vae, latent: torch.Tensor) -> torch.Tensor:
     """Decode a latent to pixels. Single decode chokepoint — see the
     VAE-boundary note above. Always returns a 4D image batch
     (B, H, W, C) float in [0, 1].
+
+    Large canvases decode TILED (see _VAE_TILE_MP) so a single huge VAE pass
+    can't OOM/overflow to NaN and blacken the output.
 
     Temporal/video VAEs (Qwen Image Edit, Wan) keep a frame axis: their
     latents are 5D ([B, C, T, H, W]) and `vae.decode` accordingly returns
@@ -507,7 +519,11 @@ def _vae_decode(vae, latent: torch.Tensor) -> torch.Tensor:
     rather than crashing. The latent is passed through to `vae.decode`
     untouched — the video VAE wants its native 5D input — we only normalise
     the *pixels* it returns."""
-    image = vae.decode(latent)
+    try:
+        out_mp = (latent.shape[-2] * 8) * (latent.shape[-1] * 8) / 1e6
+    except Exception:
+        out_mp = 0.0
+    image = vae.decode_tiled(latent) if out_mp > _VAE_TILE_MP else vae.decode(latent)
     if image.ndim == 5:
         b, t, h, w, c = image.shape
         image = image.reshape(b * t, h, w, c)
@@ -523,7 +539,16 @@ def _vae_encode(vae, pixels: torch.Tensor) -> torch.Tensor:
     ([B, C, T, H, W]) and the sampler + model require that 5D shape to flow
     through unchanged (comfy.sample.sample is ndim-agnostic and prepare_noise
     matches the latent's shape exactly). Squeezing the frame axis here would
-    break Qwen sampling — do not add a squeeze."""
+    break Qwen sampling — do not add a squeeze.
+
+    Large canvases encode TILED (see _VAE_TILE_MP) so a single huge VAE pass
+    can't OOM/overflow to NaN (which would silently poison the latent)."""
+    try:
+        in_mp = pixels.shape[1] * pixels.shape[2] / 1e6
+    except Exception:
+        in_mp = 0.0
+    if in_mp > _VAE_TILE_MP:
+        return vae.encode_tiled(pixels)
     return vae.encode(pixels)
 
 
