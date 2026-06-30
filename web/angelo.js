@@ -672,16 +672,18 @@ function attachPreviewCanvas(node) {
         }
         syncReferenceControls(node);
     });
-    refineRefToggle.title = "Reference (Refine mode) — anchor the edit to the current image. When ON, "
-        + "the strength box beside it sets a TRUE 0–1 blend: every step mixes the reference-anchored "
-        + "prediction with the free one at that ratio (0.6 = 60% anchored / 40% free). 1 = fully "
-        + "anchored (strongest identity hold).\n\n"
-        + "Photo restoration: ON at 0.6–1.0 with high Denoise — identity stays while the texture "
-        + "fully re-renders. With Xtra-Fine ON the reference is the upscaled crop.\n\n"
-        + "In-between strengths run a second positive pass per step (like CFG's negative) — a bit "
-        + "slower; 1.0 costs nothing extra. Leave OFF when your Area Prompt wants to CHANGE the "
-        + "region (anchoring fights the change). Edit models only (Klein / Qwen).\n\n"
-        + "✨ Quick Photo Refine: uses this strength when ON; defaults to a FULL anchor when OFF.";
+    refineRefToggle.title = "Reference — anchor a refine to the current image so you can run high "
+        + "Denoise without losing the subject. Refine mode, edit models only (FLUX 2 Klein / Qwen).\n\n"
+        + "WHY: normally high denoise destroys identity along with the noise. With Reference ON the "
+        + "edit model holds the person/scene from the image while the texture fully re-renders — "
+        + "that's where the quality comes from. The restoration sweet spot is the box at 0.6–1.0 "
+        + "with Denoise 0.7–1.0.\n\n"
+        + "STRENGTH BOX (appears when ON): how hard it anchors. 1 = locked to the image; lower = "
+        + "blends in more freedom to change (0.6 = 60% anchored). With Xtra-Fine ON the anchor is "
+        + "the upscaled crop.\n\n"
+        + "Turn it OFF when your Area Prompt is meant to CHANGE the region — anchoring fights the "
+        + "change. (Values strictly between 0 and 1 run a second pass per step, slightly slower; "
+        + "0 and 1 are free.)";
     refGroup.appendChild(refineRefToggle);
     const refineRefInput = makeNumberInput("", { min: 0, max: 1, step: 0.05, width: 46 }, (val) => {
         const w = findWidget(node, "reference_strength");
