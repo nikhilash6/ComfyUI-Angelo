@@ -868,7 +868,7 @@ _QUICK_REFINE_DENOISE = 1.0
 # Lite mode (toggle beside the prompt selector): identical recipe, gentler
 # denoise — a lighter restore that re-renders less and stays closer to the
 # input. Everything else (ref, target, prompt, tiling, re-roll) is unchanged.
-_QUICK_REFINE_LITE_DENOISE = 0.49
+_QUICK_REFINE_LITE_DENOISE = 0.8
 _QUICK_REFINE_REF = 1.0
 # ✨ v2 runs the whole image through the XTRA-FINE pipeline: whole-canvas
 # mask, target 1.3MP (small images get internally supersampled to 1.3MP,

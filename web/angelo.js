@@ -895,7 +895,7 @@ function attachPreviewCanvas(node) {
         _syncToggle(node._AngeloLiteToggle, findWidget(node, "quick_lite")?.value, _TOGGLE_ON_COLORS.teal);
     });
     liteToggle.title = "Lite mode for ✨ Quick Photo Refine — the exact same recipe at a GENTLER "
-        + "denoise (0.49 instead of 1.0). It re-renders less and stays closer to the input: a "
+        + "denoise (0.8 instead of 1.0). It re-renders less and stays closer to the input: a "
         + "lighter restore / cleanup rather than a full rebuild. Everything else (reference anchor, "
         + "prompt, target resolution, tiling, re-roll) is identical.";
     quickRow.appendChild(liteToggle);
