@@ -1792,6 +1792,14 @@ class AngeloRefine:
                 "quick_prompt_mode": (_QUICK_REFINE_PROMPT_MODES,
                                       {"default": "Identity + Quality"}),
 
+                # ⬇ Shrink Image: the button bumps shrink_seq with the chosen
+                # shrink_scale (0–1). A PURE pixel-space AREA-resample
+                # downscale + re-encode — no AI, deterministic — committed
+                # directly as a fresh session base (dimension change =
+                # Load-Image semantics, history resets). Declared LAST.
+                "shrink_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
+                "shrink_scale": ("FLOAT", {"default": 0.5, "min": 0.05, "max": 0.95, "step": 0.05}),
+
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1901,6 +1909,8 @@ class AngeloRefine:
         reference_strength=0.0,
         upscale_seq=0,
         lir_seq=0,
+        shrink_seq=0,
+        shrink_scale=0.5,
         quick_prompt_mode="Identity + Quality",
         latent=None,
         clip=None,
@@ -2094,6 +2104,7 @@ class AngeloRefine:
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
                 "lir_seq": lir_seq,
+                "shrink_seq": shrink_seq,
                 "fingerprint": incoming_fp,
                 "sampler_seed_at_run": int(sampler_seed),
                 "loaded_seq": loaded_seq,
@@ -2173,6 +2184,7 @@ class AngeloRefine:
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
                 "lir_seq": lir_seq,
+                "shrink_seq": shrink_seq,
                 "fingerprint": incoming_fp,
                 "loaded_seq": loaded_seq,
                 # Source image (#3/#9): capture the base once, independent of
@@ -2273,6 +2285,7 @@ class AngeloRefine:
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
                 "lir_seq": lir_seq,
+                "shrink_seq": shrink_seq,
                     # Preserve the wired-latent fingerprint + load marker so
                     # the next run doesn't read the unchanged upstream as a
                     # fresh latent and blow away the canvas we just committed.
@@ -2572,6 +2585,7 @@ class AngeloRefine:
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
                 "lir_seq": lir_seq,
+                "shrink_seq": shrink_seq,
                 "fingerprint": state.get("fingerprint"),
                 "loaded_seq": state.get("loaded_seq"),
                 "sampler_seed_at_run": state.get("sampler_seed_at_run", int(sampler_seed)),
@@ -2583,6 +2597,57 @@ class AngeloRefine:
             }
             state = _STATE[node_id]
             current, current_pixels = up_latent, up_pixels
+
+        # ===== ⬇ Shrink Image: pure pixel-space downscale =====
+        # AREA resampling (box averaging) is the right tool for shrinking —
+        # it averages the pixels being discarded, so it anti-aliases; lanczos
+        # (great for UPscaling) can ring/alias on heavy reduction. No AI;
+        # committed straight as a fresh session base (dimension change =
+        # Load-Image semantics, history resets). shrink_scale is the chosen
+        # factor; out dims snap to a multiple of 16 (latent alignment).
+        new_shrink = (
+            inpainting_mode == "Refine"
+            and shrink_seq > 0
+            and shrink_seq != state.get("shrink_seq", -1)
+        )
+        state["shrink_seq"] = shrink_seq
+        if new_shrink:
+            sk_px_in = current_pixels if current_pixels is not None else _vae_decode(vae, current)
+            in_H, in_W = sk_px_in.shape[1], sk_px_in.shape[2]
+            sc = max(0.05, min(0.95, float(shrink_scale)))
+            out_W = max(16, int(round(in_W * sc / 16.0)) * 16)
+            out_H = max(16, int(round(in_H * sc / 16.0)) * 16)
+            sk_chw = sk_px_in.movedim(-1, 1)
+            sk_chw = comfy.utils.common_upscale(sk_chw, out_W, out_H, "area", "disabled")
+            sk_pixels = sk_chw.movedim(1, -1).contiguous()
+            sk_latent = _vae_encode(vae, sk_pixels)
+            print(f"[Angelo shrink] {in_W}x{in_H} -> {out_W}x{out_H} "
+                  f"(scale {sc:.2f}, area, no AI)")
+            _STATE[node_id] = {
+                "history": [(sk_latent, sk_pixels)],
+                "click_seq": click_seq,
+                "undo_seq": undo_seq,
+                "redo_seq": redo_seq,
+                "reroll_seq": reroll_seq,
+                "vary_seq": vary_seq,
+                "vary_pick_seq": vary_pick_seq,
+                "outpaint_seq": outpaint_seq,
+                "outpaint_accept_seq": outpaint_accept_seq,
+                "quick_refine_seq": quick_refine_seq,
+                "upscale_seq": upscale_seq,
+                "lir_seq": lir_seq,
+                "shrink_seq": shrink_seq,
+                "fingerprint": state.get("fingerprint"),
+                "loaded_seq": state.get("loaded_seq"),
+                "sampler_seed_at_run": state.get("sampler_seed_at_run", int(sampler_seed)),
+                "refine_seed_at_run": (state.get("refine_seed_at_run")
+                                       if state.get("refine_seed_at_run") is not None
+                                       else int(seed)),
+                "source_latent": sk_latent,
+                "source_pixels": sk_pixels,
+            }
+            state = _STATE[node_id]
+            current, current_pixels = sk_latent, sk_pixels
 
         # ===== ▦ Large Image Refine: overlapping tiled engine =====
         # The whole canvas refined through the shared overlapping tiled

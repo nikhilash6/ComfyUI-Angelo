@@ -903,17 +903,25 @@ function attachPreviewCanvas(node) {
     node._AngeloUpscaleBtn = upscaleBtn;
 
     const lirBtn = makeActionButton("▦ Large Image Refine", () => triggerLargeImageRefine(node), "quickfix");
-    lirBtn.title = "Refine a LARGE canvas in one press: the image is divided into ~1MP boxes that "
-        + "exactly tile it, and each box runs an Xtra-Fine refine (ref 0.2, denoise 0.5, 128px "
-        + "context pad, hard edges) under the instruction \"restore the image. make it clear and "
-        + "sharp.\" — processed in a CHESS pattern, so the second half of the boxes refine with "
-        + "already-refined neighbours visible in their context and match them. Compositing is "
-        + "Xtra-Fine's bit-exact latent blend — no pixel feathering anywhere.\n\n"
+    lirBtn.title = "Refine a LARGE canvas in one press: the image is split into OVERLAPPING ~1MP "
+        + "tiles, each refined (ref 0.2, denoise 0.5) under \"restore the image. make it clear and "
+        + "sharp.\", then blended with feathered seams over one shared noise field. A second tile "
+        + "grid offset by half a tile — centred on the first grid's seams — erases any residual "
+        + "seam.\n\n"
         + "The whole pass is ONE history entry (one Undo reverts it all); the Seed drives it "
         + "(randomize + re-press = a fresh full pass). The natural partner of ⬆ 2× Pixel: enlarge "
         + "first, then refine the detail in. Edit models + CLIP recommended; Refine mode only.";
     quickRow.appendChild(lirBtn);
     node._AngeloLirBtn = lirBtn;
+
+    const shrinkBtn = makeActionButton("⬇ Shrink", () => showShrinkPopup(node), "quickfix");
+    shrinkBtn.title = "Downscale the image (no AI): pick a scale factor in the popup and Angelo "
+        + "resamples it smaller with AREA averaging — the right method for shrinking (anti-aliased, "
+        + "no ringing). The new dimensions (snapped to a multiple of 16) are shown before you "
+        + "confirm. Committed as a fresh session base — dimension change, so history resets. "
+        + "Refine mode only.";
+    quickRow.appendChild(shrinkBtn);
+    node._AngeloShrinkBtn = shrinkBtn;
 
     // ===== OUTPAINT ROW: direction + amount (Outpaint mode only) =====
     // Arrows extend the canvas in that direction; "All" pads every side
@@ -4074,8 +4082,8 @@ function triggerPixelUpscale(node) {
     queuePrompt();
 }
 
-// ▦ Large Image Refine: chess-pattern Xtra-Fine boxes over the whole
-// canvas. Python owns the loop; the JS only bumps the seq.
+// ▦ Large Image Refine: overlapping tiled refine over the whole canvas
+// (Python owns the loop; the JS only bumps the seq).
 function triggerLargeImageRefine(node) {
     if (isAnySmartMode(node) || isOutpaintMode(node)) return;  // dimmed there anyway
     if (!node._AngeloImg) {
@@ -4085,9 +4093,122 @@ function triggerLargeImageRefine(node) {
     const ws = findWidget(node, "lir_seq");
     if (!ws) return;
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    _angeloToast("▦ Large Image Refine — chess-pattern pass over the canvas…");
+    _angeloToast("▦ Large Image Refine — overlapping tiled pass over the canvas…");
     dbg("queue large image refine", { lir_seq: ws.value });
     queuePrompt();
+}
+
+// ⬇ Shrink: pick a scale factor in a popup (with a live new-dimensions
+// readout), then a pure area-resample downscale — no AI — committed as the
+// new session base. triggerShrink does the queue; showShrinkPopup is the UI.
+function triggerShrink(node, scale) {
+    if (isAnySmartMode(node) || isOutpaintMode(node)) return;
+    if (!node._AngeloImg) {
+        _angeloToast("Generate or load an image first");
+        return;
+    }
+    const scW = findWidget(node, "shrink_scale");
+    const sqW = findWidget(node, "shrink_seq");
+    if (!scW || !sqW) return;
+    setWidget(scW, scale);
+    setWidget(sqW, ((sqW.value || 0) + 1) & 0x7FFFFFFF);
+    _angeloToast("⬇ Shrink — downscaling, new base (history resets)");
+    dbg("queue shrink", { shrink_scale: scale, shrink_seq: sqW.value });
+    queuePrompt();
+}
+
+function showShrinkPopup(node) {
+    if (isAnySmartMode(node) || isOutpaintMode(node)) {
+        _angeloToast("Shrink is a Refine-mode action");
+        return;
+    }
+    const img = node._AngeloImg;
+    if (!img || !img.naturalWidth) {
+        _angeloToast("Generate or load an image first");
+        return;
+    }
+    const inW = img.naturalWidth, inH = img.naturalHeight;
+    const snap16 = (v) => Math.max(16, Math.round(v / 16) * 16);
+
+    const backdrop = document.createElement("div");
+    backdrop.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); "
+        + "display:flex; align-items:center; justify-content:center; z-index:10000; "
+        + "font-family:Arial,sans-serif;";
+    const modal = document.createElement("div");
+    modal.style.cssText = "background:#2a2a2a; color:#ddd; border:1px solid #555; "
+        + "border-radius:8px; padding:16px; width:340px; max-width:90vw; "
+        + "display:flex; flex-direction:column; gap:10px;";
+
+    const header = document.createElement("div");
+    header.textContent = "Shrink Image";
+    header.style.cssText = "font-size:14px; font-weight:bold; color:#aaa;";
+    modal.appendChild(header);
+
+    const cur = document.createElement("div");
+    cur.textContent = `Current: ${inW} × ${inH}`;
+    cur.style.cssText = "font-size:12px; color:#888;";
+    modal.appendChild(cur);
+
+    const scaleRow = document.createElement("div");
+    scaleRow.style.cssText = "display:flex; align-items:center; gap:8px; font-size:13px;";
+    const pctInput = document.createElement("input");
+    pctInput.type = "number";
+    pctInput.min = "5"; pctInput.max = "95"; pctInput.step = "1"; pctInput.value = "50";
+    pctInput.style.cssText = "width:64px; background:#1a1a1a; color:#eee; border:1px solid #555; "
+        + "border-radius:3px; padding:3px 6px; font-size:13px;";
+    const pctLabel = document.createElement("span");
+    pctLabel.textContent = "% of original";
+    scaleRow.appendChild(pctInput);
+    scaleRow.appendChild(pctLabel);
+    modal.appendChild(scaleRow);
+
+    const presetRow = document.createElement("div");
+    presetRow.style.cssText = "display:flex; gap:6px;";
+    [75, 50, 33, 25].forEach((p) => {
+        const b = document.createElement("button");
+        b.textContent = p + "%";
+        b.style.cssText = "flex:1; background:#3a3a3a; color:#ddd; border:1px solid #555; "
+            + "border-radius:4px; padding:4px 0; cursor:pointer; font-size:12px;";
+        b.addEventListener("click", () => { pctInput.value = String(p); update(); });
+        presetRow.appendChild(b);
+    });
+    modal.appendChild(presetRow);
+
+    const out = document.createElement("div");
+    out.style.cssText = "font-size:13px; color:#ffe9b0; font-weight:bold;";
+    modal.appendChild(out);
+
+    const clampPct = () => Math.max(5, Math.min(95, parseFloat(pctInput.value) || 50));
+    const update = () => {
+        const sc = clampPct() / 100;
+        out.textContent = `New: ${snap16(inW * sc)} × ${snap16(inH * sc)}`;
+    };
+    pctInput.addEventListener("input", update);
+    update();
+
+    const footer = document.createElement("div");
+    footer.style.cssText = "display:flex; justify-content:flex-end; gap:8px; margin-top:6px;";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.style.cssText = "background:#444; color:#ddd; border:none; padding:6px 14px; border-radius:4px; cursor:pointer;";
+    const okBtn = document.createElement("button");
+    okBtn.textContent = "Shrink";
+    okBtn.style.cssText = "background:rgba(30,120,80,0.95); color:#fff; border:none; padding:6px 14px; border-radius:4px; cursor:pointer;";
+    footer.appendChild(cancelBtn);
+    footer.appendChild(okBtn);
+    modal.appendChild(footer);
+
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    const close = () => { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); };
+    cancelBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    okBtn.addEventListener("click", () => {
+        const sc = clampPct() / 100;
+        close();
+        triggerShrink(node, sc);
+    });
 }
 
 // ===== Outpaint — directional canvas extension with review-before-commit =====
@@ -4974,6 +5095,8 @@ function hideMechanicalWidgets(node) {
         "quick_refine_seq",
         // ⬆ 2× Pixel + ▦ Large Image Refine — driven by their buttons
         "upscale_seq", "lir_seq",
+        // ⬇ Shrink — driven by the button + its popup
+        "shrink_seq", "shrink_scale",
         // ✨ prompt selector — driven by the dropdown beside the button
         "quick_prompt_mode",
         // Toolbar-driven (visible via the bar above the canvas)
