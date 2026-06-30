@@ -887,8 +887,23 @@ function attachPreviewCanvas(node) {
     quickRow.appendChild(quickPromptSelect);
     node._AngeloQuickPromptSelect = quickPromptSelect;
 
-    // Separator after the prompt dropdown — it belongs to Quick Photo
-    // Refine, so the pipe groups the two together and sets them apart from
+    // Lite toggle — same Quick Photo Refine recipe at a gentler denoise.
+    const liteToggle = makeToggleButton("Lite", () => {
+        const w = findWidget(node, "quick_lite");
+        if (!w) return;
+        setWidget(w, !w.value);
+        _syncToggle(node._AngeloLiteToggle, findWidget(node, "quick_lite")?.value, _TOGGLE_ON_COLORS.teal);
+    });
+    liteToggle.title = "Lite mode for ✨ Quick Photo Refine — the exact same recipe at a GENTLER "
+        + "denoise (0.49 instead of 1.0). It re-renders less and stays closer to the input: a "
+        + "lighter restore / cleanup rather than a full rebuild. Everything else (reference anchor, "
+        + "prompt, target resolution, tiling, re-roll) is identical.";
+    quickRow.appendChild(liteToggle);
+    node._AngeloLiteToggle = liteToggle;
+    _syncToggle(liteToggle, findWidget(node, "quick_lite")?.value, _TOGGLE_ON_COLORS.teal);
+
+    // Separator after the Lite toggle — the prompt dropdown + Lite belong to
+    // Quick Photo Refine, so the pipe groups them and sets them apart from
     // the upscale buttons that follow.
     quickRow.appendChild(makeSeparator());
 
@@ -901,18 +916,6 @@ function attachPreviewCanvas(node) {
         + "(auto-tiles on the now-large canvas), or spot-edit with Xtra-Fine.";
     quickRow.appendChild(upscaleBtn);
     node._AngeloUpscaleBtn = upscaleBtn;
-
-    const lirBtn = makeActionButton("▦ Large Image Refine", () => triggerLargeImageRefine(node), "quickfix");
-    lirBtn.title = "Refine a LARGE canvas in one press: the image is split into OVERLAPPING ~1MP "
-        + "tiles, each refined (ref 0.2, denoise 0.5) under \"restore the image. make it clear and "
-        + "sharp.\", then blended with feathered seams over one shared noise field. A second tile "
-        + "grid offset by half a tile — centred on the first grid's seams — erases any residual "
-        + "seam.\n\n"
-        + "The whole pass is ONE history entry (one Undo reverts it all); the Seed drives it "
-        + "(randomize + re-press = a fresh full pass). The natural partner of ⬆ 2× Pixel: enlarge "
-        + "first, then refine the detail in. Edit models + CLIP recommended; Refine mode only.";
-    quickRow.appendChild(lirBtn);
-    node._AngeloLirBtn = lirBtn;
 
     const shrinkBtn = makeActionButton("⬇ Shrink", () => showShrinkPopup(node), "quickfix");
     shrinkBtn.title = "Downscale the image (no AI): pick a scale factor in the popup and Angelo "
@@ -4082,22 +4085,6 @@ function triggerPixelUpscale(node) {
     queuePrompt();
 }
 
-// ▦ Large Image Refine: overlapping tiled refine over the whole canvas
-// (Python owns the loop; the JS only bumps the seq).
-function triggerLargeImageRefine(node) {
-    if (isAnySmartMode(node) || isOutpaintMode(node)) return;  // dimmed there anyway
-    if (!node._AngeloImg) {
-        _angeloToast("Generate or load an image first");
-        return;
-    }
-    const ws = findWidget(node, "lir_seq");
-    if (!ws) return;
-    setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
-    _angeloToast("▦ Large Image Refine — overlapping tiled pass over the canvas…");
-    dbg("queue large image refine", { lir_seq: ws.value });
-    queuePrompt();
-}
-
 // ⬇ Shrink: pick a scale factor in a popup (with a live new-dimensions
 // readout), then a pure area-resample downscale — no AI — committed as the
 // new session base. triggerShrink does the queue; showShrinkPopup is the UI.
@@ -4686,6 +4673,8 @@ function syncSmartInpaintLockedWidgets(node) {
     syncAreaPromptToggle(node);
     syncPersistentMaskToggle(node);
     syncRestoreToggle(node);
+    // Lite toggle just mirrors quick_lite (no mode forcing).
+    _syncToggle(node._AngeloLiteToggle, findWidget(node, "quick_lite")?.value, _TOGGLE_ON_COLORS.teal);
     syncReferenceControls(node);
     syncAreaPromptVisibility(node);
     // Detect row hides in Smart Guided (no mask), shows in Refine/Smart Inpaint.
@@ -5093,12 +5082,12 @@ function hideMechanicalWidgets(node) {
         "refine_reference", "reference_strength",
         // Quick Photo Refine — driven by the ✨ button
         "quick_refine_seq",
-        // ⬆ 2× Pixel + ▦ Large Image Refine — driven by their buttons
-        "upscale_seq", "lir_seq",
+        // ⬆ 2× Pixel — driven by its button
+        "upscale_seq",
         // ⬇ Shrink — driven by the button + its popup
         "shrink_seq", "shrink_scale",
-        // ✨ prompt selector — driven by the dropdown beside the button
-        "quick_prompt_mode",
+        // ✨ prompt selector + Lite toggle — driven by the dropdown/toggle
+        "quick_prompt_mode", "quick_lite",
         // Toolbar-driven (visible via the bar above the canvas)
         "persistent_mask", "area_prompt", "paint_mode", "fine_upscaling",
         "click_radius", "feather_radius", "denoise",

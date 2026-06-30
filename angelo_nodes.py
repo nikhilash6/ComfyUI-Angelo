@@ -865,6 +865,10 @@ _QUICK_REFINE_PROMPT = "Keep the identity from image 1. make the image high qual
 _QUICK_REFINE_PROMPT_QWEN = ("lightly restore this old photo, remove dust and scratches, "
                              "improve sharpness and contrast, preserve original feel")
 _QUICK_REFINE_DENOISE = 1.0
+# Lite mode (toggle beside the prompt selector): identical recipe, gentler
+# denoise — a lighter restore that re-renders less and stays closer to the
+# input. Everything else (ref, target, prompt, tiling, re-roll) is unchanged.
+_QUICK_REFINE_LITE_DENOISE = 0.49
 _QUICK_REFINE_REF = 1.0
 # ✨ v2 runs the whole image through the XTRA-FINE pipeline: whole-canvas
 # mask, target 1.3MP (small images get internally supersampled to 1.3MP,
@@ -884,19 +888,6 @@ _QUICK_REFINE_PROMPTS = {
                            "make the image high quality."),
 }
 _QUICK_REFINE_PROMPT_MODES = list(_QUICK_REFINE_PROMPTS.keys()) + ["Use Area Prompt"]
-
-# Large Image Refine (the ▦ button): the whole canvas refined through the
-# shared OVERLAPPING tiled engine (_tiled_restore_pass) — feathered ramp
-# blend + one shared noise field — with its dual offset grid on, so a
-# second tile grid centred on the first grid's seams erases them. (The
-# earlier design exact-tiled the canvas into hard-edged chess-ordered boxes
-# with bit-exact latent compositing; that left visible seams because the
-# boundaries were hard and each box used decorrelated noise. The overlapping
-# engine fixes both.) Just the recipe knobs live here now; tile size and
-# overlap are the engine's (_TILE_PX / _tile_min_overlap_px).
-_LIR_PROMPT = "restore the image. make it clear and sharp."
-_LIR_REF = 0.2
-_LIR_DENOISE = 0.5
 
 # Tiled restore engine (2× Restore Upscale + big-canvas Quick Refine).
 # Working tile size + overlap in PIXELS: tiles are sampled at ~1MP no
@@ -1812,11 +1803,6 @@ class AngeloRefine:
                 # user's next move (e.g. ✨, which auto-tiles when large).
                 "upscale_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
 
-                # ▦ Large Image Refine: the button bumps this. Chess-pattern
-                # Xtra-Fine boxes over the whole canvas (see _LIR_* constants).
-                # One history entry for the whole pass. Declared LAST.
-                "lir_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
-
                 # ✨ prompt selector — which preset (or the Area Prompt box)
                 # drives Quick Photo Refine. Declared LAST.
                 "quick_prompt_mode": (_QUICK_REFINE_PROMPT_MODES,
@@ -1829,6 +1815,12 @@ class AngeloRefine:
                 # Load-Image semantics, history resets). Declared LAST.
                 "shrink_seq": ("INT", {"default": 0, "min": 0, "max": 0x7FFFFFFF}),
                 "shrink_scale": ("FLOAT", {"default": 0.5, "min": 0.05, "max": 0.95, "step": 0.05}),
+
+                # ✨ Lite mode — the toggle beside the prompt selector. ON =
+                # the regular Quick Photo Refine recipe at a gentler denoise
+                # (_QUICK_REFINE_LITE_DENOISE); everything else identical.
+                # Declared LAST.
+                "quick_lite": ("BOOLEAN", {"default": False}),
 
             },
             "optional": {
@@ -1938,9 +1930,9 @@ class AngeloRefine:
         quick_refine_seq=0,
         reference_strength=0.0,
         upscale_seq=0,
-        lir_seq=0,
         shrink_seq=0,
         shrink_scale=0.5,
+        quick_lite=False,
         quick_prompt_mode="Identity + Quality",
         latent=None,
         clip=None,
@@ -2134,7 +2126,6 @@ class AngeloRefine:
                 "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
-                "lir_seq": lir_seq,
                 "shrink_seq": shrink_seq,
                 "fingerprint": incoming_fp,
                 "sampler_seed_at_run": int(sampler_seed),
@@ -2218,7 +2209,6 @@ class AngeloRefine:
                 "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
-                "lir_seq": lir_seq,
                 "shrink_seq": shrink_seq,
                 "fingerprint": incoming_fp,
                 "loaded_seq": loaded_seq,
@@ -2321,7 +2311,6 @@ class AngeloRefine:
                     "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
-                "lir_seq": lir_seq,
                 "shrink_seq": shrink_seq,
                     # Preserve the wired-latent fingerprint + load marker so
                     # the next run doesn't read the unchanged upstream as a
@@ -2519,6 +2508,9 @@ class AngeloRefine:
                 # positive flows through. Still works, just less targeted.
                 qr_base = positive
             qr_seed = int(seed)
+            # Lite mode (toggle) just swaps the denoise — everything else is
+            # the regular Quick Photo Refine recipe.
+            qr_denoise = _QUICK_REFINE_LITE_DENOISE if bool(quick_lite) else _QUICK_REFINE_DENOISE
             callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
             # Big canvases (e.g. after a 2× Restore Upscale) auto-route
@@ -2543,6 +2535,7 @@ class AngeloRefine:
                     sampler_name=sampler_name, scheduler=scheduler,
                     callback=callback, disable_pbar=disable_pbar,
                     ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                    tile_denoise=qr_denoise,
                     dual_grid=True,   # seam-erase offset grid (option 4)
                 )
             else:
@@ -2558,7 +2551,8 @@ class AngeloRefine:
                                      device=current.device, dtype=torch.float32)
                 print(f"[Angelo quick-refine] whole-image Xtra-Fine pass "
                       f"({Wq}x{Hq}, target {_QUICK_REFINE_TARGET_MP}MP), "
-                      f"denoise={_QUICK_REFINE_DENOISE}, ref={_QUICK_REFINE_REF}, seed={qr_seed}")
+                      f"denoise={qr_denoise}, ref={_QUICK_REFINE_REF}, seed={qr_seed}"
+                      f"{' (Lite)' if bool(quick_lite) else ''}")
                 qr_refined, qr_pixels = _refine_with_fine_upscaling(
                     model=model, vae=vae, current=current, current_pixels=qr_px_in,
                     mask=qr_mask,
@@ -2571,7 +2565,7 @@ class AngeloRefine:
                     seed=qr_seed, steps=steps, cfg=cfg,
                     sampler_name=sampler_name, scheduler=scheduler,
                     positive=qr_base, negative=negative,
-                    denoise=_QUICK_REFINE_DENOISE,
+                    denoise=qr_denoise,
                     callback=callback, disable_pbar=disable_pbar,
                     ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
                 )
@@ -2621,7 +2615,6 @@ class AngeloRefine:
                 "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
-                "lir_seq": lir_seq,
                 "shrink_seq": shrink_seq,
                 "fingerprint": state.get("fingerprint"),
                 "loaded_seq": state.get("loaded_seq"),
@@ -2672,7 +2665,6 @@ class AngeloRefine:
                 "outpaint_accept_seq": outpaint_accept_seq,
                 "quick_refine_seq": quick_refine_seq,
                 "upscale_seq": upscale_seq,
-                "lir_seq": lir_seq,
                 "shrink_seq": shrink_seq,
                 "fingerprint": state.get("fingerprint"),
                 "loaded_seq": state.get("loaded_seq"),
@@ -2685,56 +2677,6 @@ class AngeloRefine:
             }
             state = _STATE[node_id]
             current, current_pixels = sk_latent, sk_pixels
-
-        # ===== ▦ Large Image Refine: overlapping tiled engine =====
-        # The whole canvas refined through the shared overlapping tiled
-        # engine (feathered ramp blend + one shared noise field) with its
-        # dual offset grid on, so a second tile grid centred on the first
-        # grid's seams erases them. One history entry for the whole pass
-        # (one Undo reverts it all).
-        new_lir = (
-            inpainting_mode == "Refine"
-            and lir_seq > 0
-            and lir_seq != state.get("lir_seq", -1)
-        )
-        state["lir_seq"] = lir_seq
-        if new_lir:
-            if clip is not None:
-                tokens_l = clip.tokenize(_LIR_PROMPT)
-                lir_base = clip.encode_from_tokens_scheduled(tokens_l)
-            else:
-                lir_base = positive
-            lir_seed = int(seed)
-            callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
-            disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
-            print(f"[Angelo large-refine] overlapping tiled engine "
-                  f"(ref={_LIR_REF}, denoise={_LIR_DENOISE}), seam-erase dual grid")
-            # Option 1: route through the shared overlapping tiled engine
-            # (feathered ramp blend + one shared noise field) instead of the
-            # old exact-tile hard-mask boxes, and run its dual offset grid
-            # (option 4) to erase residual seams. scale=1.0 = refine in place.
-            work_lat, work_px, _ = _tiled_restore_pass(
-                model=model, vae=vae,
-                current=current, current_pixels=current_pixels,
-                scale=1.0,
-                positive_base=lir_base, negative=negative,
-                seed=lir_seed, steps=steps, cfg=cfg,
-                sampler_name=sampler_name, scheduler=scheduler,
-                callback=callback, disable_pbar=disable_pbar,
-                ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
-                tile_ref=_LIR_REF, tile_denoise=_LIR_DENOISE,
-                dual_grid=True,
-            )
-            state["history"].append((work_lat, work_px))
-            if len(state["history"]) > _HISTORY_CAP:
-                state["history"] = state["history"][-_HISTORY_CAP:]
-            state["redo_stack"] = []
-            state["vary_candidates"] = None
-            state["outpaint_pending"] = None
-            state["click_seq"] = click_seq
-            state["refine_seed_at_run"] = lir_seed
-            state["quick_last"] = False
-            current, current_pixels = work_lat, work_px
 
         # Has the user clicked since our last execution for this node?
         # Never treat a queue-hook click_seq bump as an edit in Outpaint
