@@ -552,6 +552,28 @@ def _vae_encode(vae, pixels: torch.Tensor) -> torch.Tensor:
     return vae.encode(pixels)
 
 
+def _grow_mask_latent(mask: torch.Tensor, frac: float) -> torch.Tensor:
+    """Dilate a latent-space mask outward by `frac` of its bbox extent per side
+    (a maxpool dilation). Used by the Remove brush so the erase fully covers the
+    object plus its immediate halo. `mask`: [1, H, W] in [0, 1]. Returns the
+    same shape."""
+    import torch.nn.functional as F
+    bbox = _mask_bbox_latent(mask)
+    if bbox is None or frac <= 0:
+        return mask
+    y0, y1, x0, x1 = bbox
+    mean_ext = 0.5 * ((y1 - y0) + (x1 - x0))
+    grow = int(round(frac * mean_ext))
+    if grow < 1:
+        return mask
+    k = 2 * grow + 1
+    m = mask
+    while m.dim() < 4:
+        m = m.unsqueeze(0)                               # [1,H,W] -> [1,1,H,W]
+    grown = F.max_pool2d(m, k, stride=1, padding=grow)
+    return grown.view(mask.shape).clamp(0.0, 1.0)
+
+
 def _refine_with_fine_upscaling(
     *,
     model,
@@ -570,6 +592,10 @@ def _refine_with_fine_upscaling(
                                       # (pre-refine) crop for this fraction
                                       # of the schedule (_apply_reference) —
                                       # WITHOUT Smart Inpaint's latent-zeroing
+    remove_mode: bool = False,        # Remove brush via Xtra-Fine: reference the
+                                      # crop with its masked region ZEROED (a real
+                                      # hole) so the edit model rebuilds the
+                                      # background; regenerate at full denoise
     seed: int = 0,
     steps: int,
     cfg: float,
@@ -625,7 +651,7 @@ def _refine_with_fine_upscaling(
         return current, current_pixels
 
     scale = _fine_upscale_factor(bbox_w_lat, bbox_h_lat, scale_x, scale_y, target_mp, max_linear)
-    if scale <= 1.0 and inpainting_mode != "Smart Inpaint":
+    if scale <= 1.0 and inpainting_mode != "Smart Inpaint" and not remove_mode:
         # Refine with no upscale needed — fall back to the standard latent-space
         # noise-injection inpaint. Avoids unnecessary VAE round-trips when the
         # painted region already meets the MP target.
@@ -660,8 +686,9 @@ def _refine_with_fine_upscaling(
 
     # Smart Inpaint with a large rectangle still crops + references the selected
     # region; it just doesn't upscale (and must never downscale) — clamp the
-    # factor to identity so the crop is taken at native resolution.
-    if inpainting_mode == "Smart Inpaint":
+    # factor to identity so the crop is taken at native resolution. Remove takes
+    # the same crop+reference path regardless of size, so clamp it too.
+    if inpainting_mode == "Smart Inpaint" or remove_mode:
         scale = max(1.0, scale)
 
     # ----- VAE decode the full cached latent → cached pixels -----
@@ -753,7 +780,20 @@ def _refine_with_fine_upscaling(
     # Defaults to the feathered mask; hardened to binary for Smart Inpaint on
     # 5D temporal latents — see the note in the Smart Inpaint block below.
     sample_mask = mask_crop_up
-    if inpainting_mode == "Smart Inpaint":
+    if remove_mode:
+        # Remove via Xtra-Fine: reference the crop with its masked region ZEROED
+        # (a real hole), so the edit model rebuilds the background from the
+        # surrounding crop rather than anchoring to the object. The source latent
+        # is NOT zeroed — at denoise 1.0 the masked region is noised anyway, and
+        # outside the mask the crop is kept. 5D uses a hard sampling mask for the
+        # same reason as Smart Inpaint below.
+        if latent_up.ndim == 5:
+            sample_mask = (mask_crop_up >= 0.5).to(mask_crop_up.dtype)
+        ref_hole = latent_up.clone() * (1.0 - sample_mask.unsqueeze(0))
+        positive = node_helpers.conditioning_set_values(
+            positive, {"reference_latents": [ref_hole]}, append=False,
+        )
+    elif inpainting_mode == "Smart Inpaint":
         reference_latent = latent_up.clone()
         positive = node_helpers.conditioning_set_values(
             positive, {"reference_latents": [reference_latent]}, append=False,
@@ -888,6 +928,38 @@ _QUICK_REFINE_PROMPTS = {
                            "make the image high quality."),
 }
 _QUICK_REFINE_PROMPT_MODES = list(_QUICK_REFINE_PROMPTS.keys()) + ["Use Area Prompt"]
+
+# 🩹 Remove brush — toggle beside Restore (Refine mode, edit models only).
+# Erases the painted region to background in a SINGLE denoise-1.0 sampling pass
+# over the grown, hard-edged mask (no pixel fill): regenerate the masked region
+# with a background-fill instruction (_REMOVE_PROMPT) and a reference latent whose masked
+# region is ZEROED — a real hole in the reference, so the edit model has nothing
+# to anchor to there and rebuilds the background from the surrounding scene. Full
+# denoise removes the object from the starting state; the zeroed reference stops
+# it being reconstructed (the ghost). This is the direct analog of outpaint's
+# protect brush, which excludes a region so it isn't repeated.
+#
+# feather 0 (hard mask, no soft-edge bleed) + grow the mask ~10% (cover the
+# object's halo — a tight mask leaves a rim of the original behind). The Denoise
+# box is unused — the pass is always full denoise.
+#
+# ALWAYS runs on the Xtra-Fine crop path (Remove forces the toggle on and won't
+# run without it): crop the region at the toolbar ctx-pad / MP / method and do
+# the removal on a high-res crop, with the zeroed reference built from that crop.
+# This is what rebuilds fine background detail behind the removed object.
+# FILL-style, not "remove"-style: the object is already gone from what the model
+# sees (the reference has its masked region zeroed), so the prompt's only job is
+# to fill the hole with plausible surrounding background — telling it to "remove
+# the object" is redundant/confusing when it's looking at a hole.
+_REMOVE_PROMPT = ("Seamlessly continue the surrounding background across the masked area. "
+                  "A natural, coherent extension of the scene behind it, matching the "
+                  "surrounding lighting, texture, colour and perspective. No objects, no new "
+                  "content — background only.")
+_REMOVE_PROMPT_QWEN = ("seamlessly continue the surrounding background across the masked area, "
+                       "a natural coherent extension of the scene behind it, matching the "
+                       "surrounding lighting, texture, colour and perspective; background only, "
+                       "no objects and no new content")
+_REMOVE_MASK_GROW_FRAC = 0.05  # ~10% larger area
 
 # Tiled restore engine (2× Restore Upscale + big-canvas Quick Refine).
 # Working tile size + overlap in PIXELS: tiles are sampled at ~1MP no
@@ -1822,6 +1894,22 @@ class AngeloRefine:
                 # Declared LAST.
                 "quick_lite": ("BOOLEAN", {"default": False}),
 
+                # 🩹 Remove brush — the toggle beside Restore. ON = clicks /
+                # paint strokes / Detect masks ERASE the painted object and
+                # fill the hole with background, using the edit branch (blank
+                # masked region + reference, fixed removal instruction, denoise
+                # 1.0). Edit models only; Refine mode only. Declared LAST so
+                # older saved workflows don't shift their positional
+                # widgets_values; defaults to False.
+                "remove_mode": ("BOOLEAN", {"default": False,
+                                            "tooltip": "When ON, clicks / paint / Detect masks "
+                                                       "REMOVE the painted object: the hole is "
+                                                       "filled with surrounding background, a "
+                                                       "removal pass reconstructs it, then a "
+                                                       "neutral refine cleans it up (edit models "
+                                                       "only). Refine mode only; toggled via the "
+                                                       "Remove button on the toolbar."}),
+
             },
             "optional": {
                 # CLIP / text encoder for the Area Prompt. Optional —
@@ -1934,6 +2022,7 @@ class AngeloRefine:
         shrink_scale=0.5,
         quick_lite=False,
         quick_prompt_mode="Identity + Quality",
+        remove_mode=False,
         latent=None,
         clip=None,
         overrides=None,
@@ -2742,7 +2831,17 @@ class AngeloRefine:
             # portrait and landscape images.
             scale_geom = math.sqrt(scale_x * scale_y)
             r_latent = max(1.0, click_radius * scale_geom)
-            sigma_latent = (feather_radius * scale_geom) if feather_radius > 0 else 0.0
+
+            # Remove brush: Refine-only, edit models only, mutually exclusive
+            # with Restore. Computed HERE (before the mask is built) because it
+            # forces feather 0 and grows the mask below.
+            remove_now = (bool(remove_mode) and not bool(restore_mode)
+                          and inpainting_mode == "Refine")
+
+            # Feather is forced to 0 for Remove regardless of the box — a hard
+            # mask stops the object bleeding back through a soft edge.
+            sigma_latent = 0.0 if remove_now else (
+                (feather_radius * scale_geom) if feather_radius > 0 else 0.0)
 
             # Build the mask. Sources of mask shape, in priority:
             #   1. Smart Guided Inpaint: full-image (no region — the whole
@@ -2806,11 +2905,27 @@ class AngeloRefine:
                 mask = _gaussian_blur_2d(mask, max(0.5, sigma_latent))
                 mask = mask.clamp(0.0, 1.0)
 
+            # Remove: grow the mask outward so it fully covers the object plus
+            # its immediate halo — a tight mask leaves a rim of the original
+            # object behind.
+            if remove_now:
+                mask = _grow_mask_latent(mask, _REMOVE_MASK_GROW_FRAC)
+
             # Restore brush (#12): Refine-only — the Smart modes regenerate
             # content, so "restore to base" has no meaning there and the JS
             # dims the toggle. Decided before the conditioning block so a
             # restore never pays for a CLIP encode it won't use.
             restore_now = bool(restore_mode) and inpainting_mode == "Refine"
+
+            # Remove: a single denoise-1.0 pass regenerates the masked region as
+            # background using a removal instruction + a ZEROED reference (a real
+            # hole in the reference) — see the pass loop. It ALWAYS runs on the
+            # Xtra-Fine crop path (force it on): the removal happens on a high-res
+            # crop with a crop-built zeroed reference, respecting the toolbar
+            # ctx-pad / MP / method. The JS mirrors this (forces the Xtra-Fine
+            # toggle on while Remove is active). Denoise box unused; pass is 1.0.
+            if remove_now:
+                fine_upscaling = True
 
             # Area-prompt conditioning selection. When area_prompt is on AND a
             # CLIP is connected, the refine uses the AREA text ONLY and NEVER
@@ -2845,6 +2960,11 @@ class AngeloRefine:
             else:
                 refine_positive = positive
                 refine_negative = negative
+
+            # NOTE: the Remove brush ignores this selection — it drives its
+            # single pass with a fixed background-fill instruction (never the
+            # main/Area prompt, which would draw content back into the hole). See
+            # the Remove pre-processing block.
 
             # Sample with the mask. Use the seed widget value as-is —
             # NO click_seq offset. Per-Queue variation (when persistent_mask
@@ -2896,11 +3016,27 @@ class AngeloRefine:
             # its upscaled crop instead (reference_strength passed below).
             # Restore never samples, so it's excluded.
             ref_strength = 0.0
-            if inpainting_mode == "Refine" and not restore_now and bool(refine_reference):
+            if (inpainting_mode == "Refine" and not restore_now and not remove_now
+                    and bool(refine_reference)):
                 ref_strength = max(0.0, min(1.0, float(reference_strength)))
             if ref_strength > 0.0 and not fine_upscaling:
                 refine_positive = _apply_reference(
                     refine_positive, refine_source.clone(), ref_strength)
+
+            # ===== Remove: build the remove-pass conditioning =====
+            # There is NO pixel fill — the erase is done by the pass's full
+            # denoise plus a ZEROED reference (a real hole in the reference
+            # latent), so the edit model rebuilds the background from the
+            # surroundings rather than anchoring to the object. refine_source
+            # stays `current` (the true latent); at denoise 1.0 the masked region
+            # is noised out anyway and outside it the original is kept. The mask
+            # was already grown ~10% and hardened (feather 0) higher up.
+            remove_pass_positive = None
+            if remove_now and clip is not None:
+                # Just the background-fill instruction — the ZEROED reference is built
+                # from the CROP inside _refine_with_fine_upscaling (remove_mode).
+                rm_txt = (_REMOVE_PROMPT_QWEN if current.dim() == 5 else _REMOVE_PROMPT)
+                remove_pass_positive = clip.encode_from_tokens_scheduled(clip.tokenize(rm_txt))
 
             # One pass normally; four for Vary ×4. The conditioning above is
             # shared across passes — only the noise seed differs per pass.
@@ -2935,6 +3071,33 @@ class AngeloRefine:
                             alpha = alpha.unsqueeze(0)   # [1,H,W] → [1,1,H,W] (→ [1,1,1,H,W] for 5D)
                         refined = src * alpha + current * (1.0 - alpha)
                     refined_pixels = None
+                elif remove_now:
+                    # ===== Remove: denoise-1.0 removal on the Xtra-Fine crop ====
+                    # Crop the region (toolbar ctx-pad / MP / method), regenerate
+                    # the masked area as background from the removal instruction +
+                    # a crop-built ZEROED reference (remove_mode), so the edit
+                    # model rebuilds from the surrounding crop rather than
+                    # redrawing the object. Always the crop path (forced above).
+                    if remove_pass_positive is None:
+                        # No CLIP → can't build the removal conditioning; leave
+                        # the image untouched rather than erroring.
+                        refined, refined_pixels = refine_source, None
+                    else:
+                        refined, refined_pixels = _refine_with_fine_upscaling(
+                            model=model, vae=vae, current=refine_source, current_pixels=current_pixels, mask=mask,
+                            scale_x=scale_x, scale_y=scale_y,
+                            target_mp=float(min_megapixels),
+                            max_linear=float(max_upscale),
+                            resize_method=str(resize_method),
+                            context_pad_pixel=int(fine_context_pad),
+                            inpainting_mode="Refine",
+                            remove_mode=True,
+                            seed=pass_seed, steps=steps, cfg=cfg,
+                            sampler_name=sampler_name, scheduler=scheduler,
+                            positive=remove_pass_positive, negative=refine_negative,
+                            denoise=1.0, callback=callback, disable_pbar=disable_pbar,
+                            ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
+                        )
                 elif fine_upscaling:
                     refined, refined_pixels = _refine_with_fine_upscaling(
                         model=model, vae=vae, current=refine_source, current_pixels=current_pixels, mask=mask,

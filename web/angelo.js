@@ -629,11 +629,45 @@ function attachPreviewCanvas(node) {
     row1.appendChild(paintModeToggle);
     node._AngeloPaintModeToggle = paintModeToggle;
 
+    // Restore / Remove are conflicting brushes — turning one on turns the other
+    // off so the toolbar can't lie about which is active.
+    //
+    // Remove REQUIRES Xtra-Fine, so toggling remove_mode also forces
+    // fine_upscaling on (remembering the prior state) and restores it on the way
+    // out — off, unless Xtra-Fine was already on before Remove was enabled.
+    const _setRemove = (on) => {
+        const w = findWidget(node, "remove_mode");
+        if (!w) return;
+        const fw = findWidget(node, "fine_upscaling");
+        if (on && !w.value) {
+            node._AngeloXtraFineBeforeRemove = fw ? !!fw.value : false;
+            if (fw) setWidget(fw, true);
+        } else if (!on && w.value) {
+            if (fw) setWidget(fw, !!node._AngeloXtraFineBeforeRemove);
+            node._AngeloXtraFineBeforeRemove = undefined;
+        }
+        setWidget(w, on);
+    };
+    const _clearOtherBrushes = (keep) => {
+        if (keep !== "restore_mode") {
+            const rw = findWidget(node, "restore_mode");
+            if (rw && rw.value) setWidget(rw, false);
+        }
+        if (keep !== "remove_mode") _setRemove(false);   // also restores Xtra-Fine
+    };
+    const _syncBrushToggles = () => {
+        syncRestoreToggle(node);
+        syncRemoveToggle(node);
+        syncFineUpscaleToggle(node);
+    };
+
     const restoreToggle = makeToggleButton("Restore", () => {
         const w = findWidget(node, "restore_mode");
         if (!w) return;
-        setWidget(w, !w.value);
-        syncRestoreToggle(node);
+        const next = !w.value;
+        setWidget(w, next);
+        if (next) _clearOtherBrushes("restore_mode");
+        _syncBrushToggles();
     });
     restoreToggle.title = "Restore brush — when ON, clicks and paint strokes RESTORE the painted "
         + "region back to the session's original base image instead of refining it. No sampling at "
@@ -644,7 +678,41 @@ function attachPreviewCanvas(node) {
     row1.appendChild(restoreToggle);
     node._AngeloRestoreToggle = restoreToggle;
 
+    // Remove brush — sits right beside Restore because it's the same gesture
+    // with a different fill: Restore brings the ORIGINAL back, Remove erases
+    // to BACKGROUND. Paint / click / Detect a region, and the edit model fills
+    // the hole with a continuation of the surroundings. Edit models only.
+    const removeToggle = makeToggleButton("🩹 Remove", () => {
+        const w = findWidget(node, "remove_mode");
+        if (!w) return;
+        const next = !w.value;
+        if (next) _clearOtherBrushes("remove_mode");
+        _setRemove(next);   // toggles remove_mode + forces/restores Xtra-Fine
+        _syncBrushToggles();
+    });
+    removeToggle.title = "Remove brush — erase an object and let the edit model rebuild the "
+        + "background behind it. Paint over it (or click, or Detect \"the person\" and it uses that "
+        + "mask). One full-denoise pass regenerates the masked region as background: the object is "
+        + "cut out of the reference the model anchors to (a real hole), so it rebuilds from the "
+        + "surroundings instead of redrawing the object.\n\n"
+        + "The Denoise box is ignored (the pass is always full denoise); your main/Area prompt isn't "
+        + "used either — a fixed background-fill instruction drives it. Feather is forced to 0 and the mask "
+        + "auto-grows ~10% to cover the object's halo.\n\n"
+        + "Remove auto-enables Xtra-Fine (and shows Ctx Pad / MP / Method) and requires it — the "
+        + "removal always runs on a high-res crop, which is what rebuilds fine background detail. "
+        + "Turning Remove off restores Xtra-Fine to how it was before.\n\n"
+        + "Edit models only (FLUX 2 Klein / Qwen-Image-Edit). Refine mode only; mutually exclusive "
+        + "with Restore. Tips: shadows/reflections aren't under the brush — paint those too, or "
+        + "they'll give the removal away. Left any artifacts behind? Turn Remove OFF and clean them "
+        + "with the regular brush — Paint Mode on, in Refine mode, at a gentle Denoise (~0.6) — to "
+        + "smooth them out without regenerating the whole area. Undo / Re-roll / Vary ×4 all work.";
+    row1.appendChild(removeToggle);
+    node._AngeloRemoveToggle = removeToggle;
+
     const fineUpscaleToggle = makeToggleButton("Xtra-Fine", () => {
+        // Remove forces Xtra-Fine on and requires it — ignore clicks while
+        // Remove is active so it can't be switched off underneath it.
+        if (findWidget(node, "remove_mode")?.value) return;
         const w = findWidget(node, "fine_upscaling");
         if (!w) return;
         setWidget(w, !w.value);
@@ -4724,6 +4792,8 @@ const _TOGGLE_ON_COLORS = {
     teal:   { bg: "rgba(30, 110, 130, 0.95)", border: "rgba(140, 200, 220, 0.9)" },
     amber:  { bg: "rgba(160, 110, 30, 0.95)", border: "rgba(230, 185, 110, 0.9)" },
     sky:    { bg: "rgba(40, 100, 150, 0.95)", border: "rgba(130, 195, 235, 0.9)" },
+    rose:   { bg: "rgba(150, 45, 70, 0.95)",  border: "rgba(230, 120, 150, 0.9)" },
+    plum:   { bg: "rgba(110, 45, 120, 0.95)", border: "rgba(195, 130, 220, 0.9)" },
 };
 
 function syncPersistentMaskToggle(node) {
@@ -4759,6 +4829,15 @@ function syncRestoreToggle(node) {
     _syncToggle(node._AngeloRestoreToggle, effective, _TOGGLE_ON_COLORS.amber);
 }
 
+function syncRemoveToggle(node) {
+    // Backend honours remove_mode in Refine only (edit models) — the Smart
+    // modes ignore it, so display OFF there rather than a stale widget value.
+    const effective = isAnySmartMode(node)
+        ? false
+        : findWidget(node, "remove_mode")?.value;
+    _syncToggle(node._AngeloRemoveToggle, effective, _TOGGLE_ON_COLORS.rose);
+}
+
 function syncQuickPromptSelect(node) {
     _syncDropdownWrap(node._AngeloQuickPromptSelect, findWidget(node, "quick_prompt_mode")?.value);
 }
@@ -4784,6 +4863,7 @@ function syncFineUpscaleToggle(node) {
     let effective;
     if (isSmartInpaintMode(node)) effective = true;
     else if (isSmartGuidedInpaintMode(node)) effective = false;
+    else if (findWidget(node, "remove_mode")?.value) effective = true;  // Remove forces Xtra-Fine on
     else effective = findWidget(node, "fine_upscaling")?.value;
     _syncToggle(node._AngeloFineUpscaleToggle, effective, _TOGGLE_ON_COLORS.green);
 
@@ -4842,6 +4922,7 @@ function syncSmartInpaintLockedWidgets(node) {
         "_AngeloFineUpscaleToggle",
         "_AngeloPaintModeToggle",
         "_AngeloRestoreToggle",
+        "_AngeloRemoveToggle",
         "_AngeloRefGroup",
         "_AngeloCtxPadInput",
     ], anySmart || outp);
@@ -4878,6 +4959,7 @@ function syncSmartInpaintLockedWidgets(node) {
     syncAreaPromptToggle(node);
     syncPersistentMaskToggle(node);
     syncRestoreToggle(node);
+    syncRemoveToggle(node);
     // Lite toggle just mirrors quick_lite (no mode forcing).
     _syncToggle(node._AngeloLiteToggle, findWidget(node, "quick_lite")?.value, _TOGGLE_ON_COLORS.teal);
     syncReferenceControls(node);
@@ -5123,6 +5205,7 @@ function syncAllToolbarControls(node) {
     syncAreaPromptToggle(node);
     syncPaintModeToggle(node);
     syncRestoreToggle(node);
+    syncRemoveToggle(node);
     syncReferenceControls(node);
     syncQuickPromptSelect(node);
     syncPromptSlotButtons(node);
@@ -5276,6 +5359,8 @@ function hideMechanicalWidgets(node) {
         "redo_seq",
         // Restore brush — driven by the Restore toggle on the toolbar
         "restore_mode",
+        // Remove brush — driven by the Remove toggle on the toolbar
+        "remove_mode",
         // Prompt slots — JSON state for the Area Prompt slot strip
         "area_prompt_slots",
         // Vary ×4 — driven by the Vary button + chooser overlay

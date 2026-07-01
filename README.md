@@ -1,6 +1,6 @@
 # Angelo
 
-**A click-to-edit sampler for ComfyUI.** Generate an image, then work it like a photo editor — click or paint to **refine** regions, drag rectangles or describe locations to **inpaint** new content, click an edge to **outpaint** the canvas wider, auto-**detect** subjects by naming them and **fix them all with one button**, pick the best of **four variations**, and **restore** anything an edit shouldn't have touched. There's a **one-click photo refine** too: it rebuilds a soft or low-resolution photo sharp, anchored to the original so it stays the same person and scene — and doubles as **upscaling** (enlarge in pixel space, then refine the detail back in). Everything outside what you edit stays bit-exact. One node replaces the standard `KSampler` + ADetailer + MaskEditor + outpaint-pad chain. Works with **FLUX 2 Klein 9B** and **Qwen-Image-Edit** as first-class edit models — plus any other sampler-compatible model (FLUX 1, SDXL, SD 1.5).
+**A click-to-edit sampler for ComfyUI.** Generate an image, then work it like a photo editor — click or paint to **refine** regions, drag rectangles or describe locations to **inpaint** new content, click an edge to **outpaint** the canvas wider, paint over something to **remove** it and rebuild the background, auto-**detect** subjects by naming them and **fix them all with one button**, pick the best of **four variations**, and **restore** anything an edit shouldn't have touched. There's a **one-click photo refine** too: it rebuilds a soft or low-resolution photo sharp, anchored to the original so it stays the same person and scene — and doubles as **upscaling** (enlarge in pixel space, then refine the detail back in). Everything outside what you edit stays bit-exact. One node replaces the standard `KSampler` + ADetailer + MaskEditor + outpaint-pad chain. Works with **FLUX 2 Klein 9B** and **Qwen-Image-Edit** as first-class edit models — plus any other sampler-compatible model (FLUX 1, SDXL, SD 1.5).
 
 <a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
 
@@ -64,6 +64,7 @@ Angelo collapses all of it into one node:
 
 - **Re-roll** the last edit with a fresh seed on the same mask + original image, or **toggle Persistent Mask** to keep evolving a region over repeated Queues.
 - **Restore brush** — toggle Restore and paint to heal a region back to the *original* image, instantly (no sampling). The Lightroom "erase part of an edit" gesture: refine a spacesuit, then brush the face inside the helmet back to how it was.
+- **🩹 Remove brush** — toggle Remove and paint over an object (or Detect it, or click) to erase it and have the edit model rebuild the background behind it. It cuts the region out of the reference the model anchors to, so it continues the surroundings instead of redrawing the object — no ghosting. See [Remove brush](#remove-brush--erase-an-object) for how it works.
 - **Hold `\`** over the preview for an instant before/after flash of the original base (Lightroom's compare key).
 - **⛶ Fullscreen** — pop the whole editor out to a full-screen canvas for precise detail work; every tool keeps working, Esc returns it.
 - **Undo / Redo** to step back and forward through your refines.
@@ -218,6 +219,7 @@ The Overrides node also carries **`disable_live_preview`** — flip this ON if C
 | **Area Prompt** | Refine with the Area Prompt text typed in the box above the canvas (encoded with the connected `CLIP`) instead of the main prompt. Requires a `CLIP` input + non-empty text. The box only appears when this is ON. Forced ON in both Smart modes |
 | **Paint Mode** | Hold + drag to paint a freeform stroke as the mask, instead of single-circle clicks (Refine only) |
 | **Restore** | When ON, clicks / strokes / Detect masks **restore** the painted region back to the session's original base — a feathered latent blend, no sampling, instant. Bring back details an edit shouldn't have touched. Refine only |
+| **🩹 Remove** | When ON, clicks / strokes / Detect masks **erase** the painted object and rebuild the background behind it — the region is cut out of the reference the edit model anchors to (a real hole), so it continues the surroundings instead of redrawing the object. Always full denoise on the Xtra-Fine crop path (auto-enables Xtra-Fine; restores it on OFF); Feather forced 0, mask auto-grows ~10%; Denoise box + main/Area prompt ignored. Edit models only; Refine only; mutually exclusive with Restore. See "Remove brush" |
 | **Reference** (+ strength box) | Anchor refines to the current image. When ON, a strength box appears beside it: a **true 0–1 blend** — every step mixes the reference-anchored prediction with the free one at that ratio (0.6 = 60% anchored; 1 = fully anchored). Lets Denoise run high (0.7–1.0) without losing the subject — the photo-restoration dial. In-between values run a second positive pass per step (slightly slower; 1.0 costs nothing). Leave OFF when the Area Prompt wants to *change* the region (anchoring fights changes). Quick Photo Refine ignores this entirely (it has its own fixed recipe). Refine only; needs an edit model |
 | **Xtra-Fine** | Crop the painted region, upscale via VAE + image upscale, refine at high effective resolution, composite back. ADetailer-style. Forced ON in Smart Inpaint, OFF in Smart Guided Inpaint |
 | **Inpaint ▾** | `Refine` / `Smart Inpaint` / `Smart Guided Inpaint` / `Outpaint`. See "Inpainting Mode" below |
@@ -300,6 +302,25 @@ Notes:
 - It pushes a normal history entry, so **Undo / Redo step through restores** just like refines.
 - **Refine mode only.** The Smart modes generate new content, so "restore to base" has no meaning there — the toggle dims.
 - Pair it with **hold `\`** (see Keyboard shortcuts) to flash the original first and see exactly what you'd be bringing back.
+
+## Remove brush — erase an object
+
+Paint over something you don't want and Angelo erases it, rebuilding the background behind it. It's the sibling of the Restore brush — same gesture, opposite job: Restore brings the *original* back, Remove makes the object *gone*.
+
+1. Toggle **🩹 Remove** ON (next to Restore).
+2. Paint over the object (or single-click, or **Detect** it — e.g. "the person" — and it uses that mask).
+3. The region is regenerated as background.
+
+**How it avoids ghosting.** Naively telling a model to "remove the object" tends to leave a faint copy of it — the surrounding context implies it's there. Remove sidesteps that: it cuts the masked region **out of the reference** the edit model anchors to (a genuine hole in the reference latent), so the model has nothing to reproduce there and instead continues the surrounding scene. This is the same idea as the Outpaint protect brush, which excludes a region so it isn't repeated. A fixed **background-fill** instruction drives the pass, never your main prompt (that would draw scene content back into the hole).
+
+Fixed behaviour, so there's nothing to tune:
+
+- **Always full denoise**, on the **Xtra-Fine crop path** — turning Remove on auto-enables Xtra-Fine (and shows Ctx Pad / MP / Method); the removal runs on a high-res crop, which is what rebuilds fine background detail. Turning Remove off restores Xtra-Fine to how it was.
+- **Feather is forced to 0** and the mask **auto-grows ~10%** to cover the object's halo (a tight mask leaves a rim of the original behind).
+- The **Denoise box and your main/Area prompt are ignored** — the fill instruction and the crop reference do the work.
+- **Edit models only** (FLUX 2 Klein 9B / Qwen-Image-Edit — they have the edit branch this needs). **Refine mode only**; mutually exclusive with Restore. Undo / Re-roll / Vary ×4 all work.
+
+**Tips.** Shadows and reflections aren't under the brush — paint those too, or they'll give the removal away. If a removal leaves a small artifact, turn Remove **off** and clean it with the regular brush (**Paint Mode**, Refine mode, a gentle Denoise ~0.6) to smooth it without regenerating the whole area.
 
 ## Photo restoration (✨ Quick Photo Refine + the Reference dial)
 
