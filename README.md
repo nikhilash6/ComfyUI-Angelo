@@ -65,6 +65,7 @@ Angelo collapses all of it into one node:
 - **Re-roll** the last edit with a fresh seed on the same mask + original image, or **toggle Persistent Mask** to keep evolving a region over repeated Queues.
 - **Restore brush** — toggle Restore and paint to heal a region back to the *original* image, instantly (no sampling). The Lightroom "erase part of an edit" gesture: refine a spacesuit, then brush the face inside the helmet back to how it was.
 - **Hold `\`** over the preview for an instant before/after flash of the original base (Lightroom's compare key).
+- **⛶ Fullscreen** — pop the whole editor out to a full-screen canvas for precise detail work; every tool keeps working, Esc returns it.
 - **Undo / Redo** to step back and forward through your refines.
 - **Load Image** to edit an existing photo directly in the node — no Empty Latent + `VAEEncode` chain to wire (you still connect the `vae` input as normal; Angelo does the encode itself). Or just **drag-drop an image file** onto the node; **right-click** the preview to copy it or open it in a new tab.
 - **`source_image` output** emits the original pre-edit base, ready to wire straight into a compare node.
@@ -515,6 +516,17 @@ When you zoom in (>1×), a small **minimap** appears in the bottom-right corner 
 
 While you're zoomed or panned, the **auto-fit is suspended** so resizing the node won't snap your view back. A genuinely new image (or double-click reset) returns to fit; refining the *same* image keeps your zoom.
 
+## Fullscreen — the whole editor, full screen
+
+Detail work on a node-sized preview is fiddly. Hit **⛶ Fullscreen** (top-left of the Mode row) and the entire editor — toolbar, Area Prompt box, and canvas — pops out to fill your whole screen. It's not a read-only lightbox: **everything works exactly as it does in the node** — click-to-refine, Paint Mode, rectangle-drag, Outpaint, Detect, wheel-zoom, the lot — just on a canvas many times bigger, so precise clicks and brushwork are far easier.
+
+![Angelo in fullscreen — the full editor on a big canvas](screenshots/fullscreen.png)
+
+- **Enter / exit:** the **⛶ Fullscreen** button toggles it. Once in, use the **✕ Exit Fullscreen** button (top-right), press **Esc**, or click **⛶ Exit** again.
+- **True browser fullscreen** is requested too where the browser allows it, so even the browser chrome gets out of the way — but if it's refused, the overlay still fills the ComfyUI viewport, so the feature works regardless.
+- **Layered Esc:** if a review is open (Outpaint / Vary ×4 / Detect candidates), the first Esc dismisses *that* and a second Esc leaves fullscreen — nothing gets closed out from under you.
+- Works in **both** Sampler and Edit mode, and your zoom re-fits to the larger canvas on the way in and back out.
+
 ## Keyboard shortcuts
 
 When the cursor is hovering the preview canvas AND you're in Edit Mode, these keys adjust the matching toolbar values directly:
@@ -530,6 +542,7 @@ Plus one hold-key that works in **any** mode (not just Edit Mode):
 | Key | Does | Convention |
 |---|---|---|
 | `\` (hold) | Flash the session's **original base image** while held — release to return to the current state. A "BEFORE" badge confirms what you're looking at | Lightroom's before/after key |
+| `Esc` | Leave **⛶ Fullscreen** (after first dismissing any open Outpaint / Vary / Detect review) | Universal "get me out" |
 
 The hover ring on the canvas updates live as you press `[` / `]`, so you can size the brush against the actual image content. Shortcuts only fire while the cursor is on the canvas; move to the toolbar and they revert to ComfyUI's normal keybindings.
 

@@ -1140,6 +1140,29 @@ function attachPreviewCanvas(node) {
     modeRow.appendChild(modeSelect);
     node._AngeloModeSelect = modeSelect;
 
+    // Fullscreen toggle — pinned top-left of the Mode row (mirrors the
+    // floating detect panel on the right, so it never disturbs the centred
+    // Mode dropdown). Pops the WHOLE editor (toolbar + canvas) into a
+    // viewport-filling overlay for a much bigger canvas; Esc or the button
+    // returns it. Works in both Sampler and Edit mode.
+    const fullscreenBtn = document.createElement("button");
+    fullscreenBtn.type = "button";
+    fullscreenBtn.textContent = "⛶ Fullscreen";
+    fullscreenBtn.style.cssText = "position:absolute; left:6px; top:4px; z-index:6; cursor:pointer; "
+        + "padding:3px 9px; font-size:11px; font-weight:bold; border-radius:3px; "
+        + "border:1px solid #555; background:#2a2a2a; color:#ccc; user-select:none; line-height:15px;";
+    for (const ev of ["pointerdown", "mousedown"]) {
+        fullscreenBtn.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    fullscreenBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleAngeloFullscreen(node);
+    });
+    modeRow.appendChild(fullscreenBtn);
+    node._AngeloFullscreenBtn = fullscreenBtn;
+    syncFullscreenButton(node);
+
     // Floating detect-mode panel — pinned top-right of the Mode row, shown
     // only while candidates are active. Holds the red Cancel button + an
     // opacity slider for the highlight overlay (drag down to peek at the
@@ -2118,6 +2141,9 @@ function attachPreviewCanvas(node) {
         const onRemoved = node.onRemoved;
         node.onRemoved = function () {
             try { ro.disconnect(); } catch (e) { /* noop */ }
+            // Deleting the node mid-fullscreen would otherwise leave the
+            // overlay (and its detached container) orphaned in the body.
+            try { if (node._AngeloFSOverlay) exitAngeloFullscreen(node); } catch (e) { /* noop */ }
             if (onRemoved) onRemoved.apply(this, arguments);
         };
     }
@@ -4463,6 +4489,183 @@ function makeToolbarRow() {
     row.style.gap = "4px";
     row.style.padding = "4px 6px";
     return row;
+}
+
+
+// ============================================================
+// Fullscreen overlay
+// ============================================================
+//
+// Pops the whole editing UI (toolbar + area-prompt box + canvas) into a
+// fixed, viewport-filling overlay. We reparent node._AngeloContainer INTACT
+// rather than cloning anything, so every existing click/paint/zoom/pan
+// handler keeps working — they all map through canvas.getBoundingClientRect()
+// which reflects the new (much larger) size — and the ResizeObserver on
+// canvasWrap auto-refits the image. On exit the container goes back exactly
+// where LiteGraph's DOM widget put it (tracked via a comment placeholder).
+//
+// We also make a best-effort request for TRUE browser fullscreen on the
+// overlay so the browser chrome hides too; if the browser refuses (needs a
+// user gesture / disallowed), the plain overlay already covers the ComfyUI
+// viewport, so the feature still works.
+
+function isAngeloFullscreen(node) {
+    return !!node._AngeloFSOverlay;
+}
+
+function toggleAngeloFullscreen(node) {
+    if (isAngeloFullscreen(node)) exitAngeloFullscreen(node);
+    else enterAngeloFullscreen(node);
+}
+
+function syncFullscreenButton(node) {
+    const btn = node._AngeloFullscreenBtn;
+    if (!btn) return;
+    const on = isAngeloFullscreen(node);
+    btn.textContent = on ? "⛶ Exit" : "⛶ Fullscreen";
+    btn.style.background = on ? "rgba(40, 62, 82, 0.95)" : "#2a2a2a";
+    btn.style.borderColor = on ? "rgba(120, 190, 235, 0.9)" : "#555";
+    btn.style.color = on ? "#d8eeff" : "#ccc";
+    btn.title = on
+        ? "Exit fullscreen and return the editor to the node (Esc)."
+        : "Pop the editor into a fullscreen overlay — a much bigger canvas for precise "
+          + "clicks/paint/zoom. The toolbar and all editing work exactly as normal. "
+          + "Esc or this button returns it to the node. Requests true browser fullscreen "
+          + "too where the browser allows it.";
+}
+
+function enterAngeloFullscreen(node) {
+    const container = node._AngeloContainer;
+    if (!container || node._AngeloFSOverlay) return;
+
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed; inset:0; z-index:99990; background:#0d0d0d; "
+        + "display:flex; flex-direction:column;";
+    // Keep graph-level pointer/wheel handling from firing underneath — clicks
+    // inside the toolbar/canvas still reach their own listeners normally.
+    overlay.addEventListener("pointerdown", (e) => e.stopPropagation());
+    overlay.addEventListener("wheel", (e) => e.stopPropagation(), { passive: false });
+
+    // Remember where the container lives so we can put it back precisely.
+    const placeholder = document.createComment("angelo-fullscreen-slot");
+    node._AngeloFSPrevParent = container.parentNode;
+    node._AngeloFSPlaceholder = placeholder;
+    node._AngeloFSPrevCss = container.style.cssText;
+    if (container.parentNode) container.parentNode.insertBefore(placeholder, container);
+
+    // Fill the overlay. Same flex-column shape as the in-node container, so
+    // the toolbar keeps its height and canvasWrap flex-grows into the rest.
+    container.style.cssText = "width:100%; height:100%; flex:1 1 auto; min-height:0; "
+        + "border:none; border-radius:0; background:#1a1a1a; overflow:hidden; "
+        + "display:flex; flex-direction:column;";
+    overlay.appendChild(container);
+
+    // Floating Exit button — the discoverable escape hatch when true browser
+    // fullscreen isn't granted (Esc also works; see the keydown handler).
+    const exitBtn = document.createElement("button");
+    exitBtn.type = "button";
+    exitBtn.textContent = "✕ Exit Fullscreen (Esc)";
+    exitBtn.title = "Return the editor to the node (Esc).";
+    exitBtn.style.cssText = "position:absolute; right:12px; top:10px; z-index:2; cursor:pointer; "
+        + "padding:5px 12px; font-size:12px; font-weight:bold; border-radius:4px; "
+        + "border:1px solid rgba(255,255,255,0.35); background:rgba(30,30,30,0.92); color:#eee; "
+        + "user-select:none;";
+    for (const ev of ["pointerdown", "mousedown"]) {
+        exitBtn.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    exitBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        exitAngeloFullscreen(node);
+    });
+    overlay.appendChild(exitBtn);
+
+    document.body.appendChild(overlay);
+    node._AngeloFSOverlay = overlay;
+
+    // Esc-to-close — self-contained so it doesn't depend on canvas hover.
+    // Defers to any open sub-overlay (detect / vary / outpaint) so the first
+    // Esc dismisses that and a second Esc leaves fullscreen.
+    const onKey = (e) => {
+        if (e.key !== "Escape") return;
+        if (isOutpaintReviewOpen(node) || isVaryChooserOpen(node)
+            || (node._AngeloDetections && node._AngeloDetections.length)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        exitAngeloFullscreen(node);
+    };
+    node._AngeloFSKeyHandler = onKey;
+    document.addEventListener("keydown", onKey, true);
+
+    // If the user drops OUT of true browser-fullscreen (e.g. the browser eats
+    // Esc to exit fullscreen before our keydown sees it), tear the overlay
+    // down to match, so the two never get out of sync.
+    const onFsChange = () => {
+        if (!document.fullscreenElement && node._AngeloFSOverlay) {
+            exitAngeloFullscreen(node);
+        }
+    };
+    node._AngeloFSFsChangeHandler = onFsChange;
+    document.addEventListener("fullscreenchange", onFsChange);
+
+    // Best-effort true fullscreen (hides browser chrome). Rejection is fine.
+    if (overlay.requestFullscreen) {
+        try { overlay.requestFullscreen().catch(() => {}); }
+        catch (e) { /* older browsers: ignore */ }
+    }
+
+    // Refit the image to the now-huge canvas area. rAF lets the overlay lay
+    // out first so clientWidth/Height are real before we measure.
+    requestAnimationFrame(() => {
+        try { resetView(node); redrawCanvasWithOverlays(node); }
+        catch (e) { dbg("fullscreen refit threw", e); }
+    });
+
+    syncFullscreenButton(node);
+}
+
+function exitAngeloFullscreen(node) {
+    const overlay = node._AngeloFSOverlay;
+    const container = node._AngeloContainer;
+    if (!overlay || !container) return;
+
+    // Detach listeners FIRST so tearing down browser-fullscreen below can't
+    // re-enter this via the fullscreenchange handler.
+    if (node._AngeloFSKeyHandler) {
+        document.removeEventListener("keydown", node._AngeloFSKeyHandler, true);
+        node._AngeloFSKeyHandler = null;
+    }
+    if (node._AngeloFSFsChangeHandler) {
+        document.removeEventListener("fullscreenchange", node._AngeloFSFsChangeHandler);
+        node._AngeloFSFsChangeHandler = null;
+    }
+    if (document.fullscreenElement) {
+        try { document.exitFullscreen(); } catch (e) { /* noop */ }
+    }
+
+    // Put the container back exactly where it came from.
+    container.style.cssText = node._AngeloFSPrevCss || "";
+    const placeholder = node._AngeloFSPlaceholder;
+    const prevParent = node._AngeloFSPrevParent;
+    if (placeholder && placeholder.parentNode) {
+        placeholder.parentNode.insertBefore(container, placeholder);
+        placeholder.parentNode.removeChild(placeholder);
+    } else if (prevParent) {
+        prevParent.appendChild(container);
+    }
+    node._AngeloFSPlaceholder = null;
+    node._AngeloFSPrevParent = null;
+    node._AngeloFSPrevCss = null;
+
+    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    node._AngeloFSOverlay = null;
+
+    requestAnimationFrame(() => {
+        try { resetView(node); redrawCanvasWithOverlays(node); }
+        catch (e) { dbg("fullscreen restore refit threw", e); }
+    });
+
+    syncFullscreenButton(node);
 }
 
 /**
