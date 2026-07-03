@@ -2671,6 +2671,16 @@ function syncPromptSlotButtons(node) {
     });
 }
 
+// Body-level modal popups (Smart Phrasing / Load Image / Shrink) normally
+// attach to document.body so they overlay the whole page. But while the node is
+// in fullscreen, the fullscreen overlay sits ABOVE document.body's popups, so
+// they'd be hidden until you exit. Parent them into the overlay instead when
+// it's active — the overlay owns the stacking context, so a fixed backdrop
+// inside it still covers the viewport and renders above the editor.
+function _angeloModalParent(node) {
+    return (node && node._AngeloFSOverlay) ? node._AngeloFSOverlay : document.body;
+}
+
 function showSmartPhrasingPopup(node) {
     const backdrop = document.createElement("div");
     backdrop.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); "
@@ -2724,7 +2734,7 @@ function showSmartPhrasingPopup(node) {
     footer.appendChild(insertBtn);
     modal.appendChild(footer);
     backdrop.appendChild(modal);
-    document.body.appendChild(backdrop);
+    _angeloModalParent(node).appendChild(backdrop);
 
     const close = () => { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); };
     insertBtn.addEventListener("click", () => {
@@ -3898,7 +3908,7 @@ function showLoadImagePopup(node, file) {
     modal.appendChild(footer);
 
     backdrop.appendChild(modal);
-    document.body.appendChild(backdrop);
+    _angeloModalParent(node).appendChild(backdrop);
 
     const close = () => { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); };
     cancelBtn.addEventListener("click", close);
@@ -4282,7 +4292,7 @@ function showShrinkPopup(node) {
     modal.appendChild(footer);
 
     backdrop.appendChild(modal);
-    document.body.appendChild(backdrop);
+    _angeloModalParent(node).appendChild(backdrop);
 
     const close = () => { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); };
     cancelBtn.addEventListener("click", close);
