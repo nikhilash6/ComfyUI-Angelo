@@ -520,7 +520,14 @@ def _vae_decode(vae, latent: torch.Tensor) -> torch.Tensor:
     untouched — the video VAE wants its native 5D input — we only normalise
     the *pixels* it returns."""
     try:
-        out_mp = (latent.shape[-2] * 8) * (latent.shape[-1] * 8) / 1e6
+        # Ask the VAE for its true spatial ratio — hardcoding 8 under-
+        # estimated the output 4× on 16×-per-axis VAEs (FLUX 2, the node's
+        # main target), so tiling only engaged ~4× past the danger point.
+        try:
+            ratio = int(vae.spacial_compression_decode())
+        except Exception:
+            ratio = int(getattr(vae, "downscale_ratio", 8) or 8)
+        out_mp = (latent.shape[-2] * ratio) * (latent.shape[-1] * ratio) / 1e6
     except Exception:
         out_mp = 0.0
     image = vae.decode_tiled(latent) if out_mp > _VAE_TILE_MP else vae.decode(latent)
@@ -2085,19 +2092,29 @@ class AngeloRefine:
         # the undo stack is capped (the original base is evicted after
         # _HISTORY_CAP refines), so a fingerprint comparison there is bogus
         # and would spuriously reset mid-session. See the need_reset note.
+        # Cached-base fallbacks prefer source_latent over history[0]:
+        # once _HISTORY_CAP evicts the true base, history[0] is a mid-
+        # session edit — a Reset would land on it AND overwrite the
+        # session base (Restore anchor, compare image, source_image
+        # output) with it, unrecoverably.
+        def _cached_base(st):
+            src = st.get("source_latent")
+            if src is not None:
+                return src
+            h0 = st["history"][0]
+            return h0[0] if isinstance(h0, tuple) else h0
+
         base_from_wired_latent = False
         if forced_base is not None:
             incoming = forced_base
         elif loaded_active and state is not None and state.get("history"):
             # Loaded image still active — keep its base, ignore `latent`.
-            hist_0 = state["history"][0]
-            incoming = hist_0[0] if isinstance(hist_0, tuple) else hist_0
+            incoming = _cached_base(state)
         elif latent is not None:
             incoming = latent["samples"]
             base_from_wired_latent = True
         elif state is not None and state.get("history"):
-            hist_0 = state["history"][0]
-            incoming = hist_0[0] if isinstance(hist_0, tuple) else hist_0
+            incoming = _cached_base(state)
         else:
             raise ValueError(
                 "Angelo: no base image — connect a `latent` input or use the "
@@ -2325,6 +2342,12 @@ class AngeloRefine:
                     state["redo_stack"] = redo[-_HISTORY_CAP:]
             state["undo_seq"] = undo_seq
             state["quick_last"] = False
+            # history[-1] is no longer the edit the mask widgets describe —
+            # block Re-roll / Vary until a fresh edit re-arms them, and drop
+            # any stashed Vary candidates (picking one after an Undo would
+            # overwrite the wrong history entry).
+            state["last_edit_kind"] = None
+            state["vary_candidates"] = None
             # Undo is a PURE restore — pop the cached latent and decode it.
             # It must NEVER re-sample, or it would produce a different image
             # than the one being restored. Absorb the current click_seq so
@@ -2352,6 +2375,10 @@ class AngeloRefine:
                     state["history"] = state["history"][-_HISTORY_CAP:]
             state["redo_seq"] = redo_seq
             state["quick_last"] = False
+            # Same invalidation as Undo — the restored entry may not be the
+            # edit the mask widgets currently describe.
+            state["last_edit_kind"] = None
+            state["vary_candidates"] = None
             state["click_seq"] = click_seq
 
         # ===== Vary pick: commit a chosen variation (pure restore) =====
@@ -2423,33 +2450,49 @@ class AngeloRefine:
         # touching the mask widgets. Re-run the SAME mask on the SAME pre-
         # edit base and swap the result in place of the last attempt — so
         # the user can cycle seeds on one edit without reset → re-mask →
-        # rerun. Implemented as "pop the last refine to expose its pre-edit
-        # base as history[-1]"; the edit block below then re-runs from there
-        # and appends the fresh variation, restoring the stack depth (net
-        # effect: replace, not stack). No-op if there's no prior edit yet.
+        # rerun. History is NOT popped up front (a Cancel/OOM mid-sample
+        # would permanently lose the attempt): like Vary, the edit block
+        # samples from history[-2] and the commit REPLACES history[-1]
+        # only on success. Gated on last_edit_kind == "mask" — after an
+        # Undo/Redo or a ✨ pass the mask widgets no longer describe
+        # history[-1], so re-running them would corrupt the session
+        # (e.g. a click_x=-1 fresh session fires a bogus corner edit).
         new_reroll = reroll_seq > 0 and reroll_seq != state.get("reroll_seq", -1)
         reroll_now = (
             new_reroll
             and len(state["history"]) > 1
             and inpainting_mode != "Outpaint"
+            and state.get("last_edit_kind") == "mask"
         )
-        if reroll_now:
-            state["history"].pop()
         state["reroll_seq"] = reroll_seq
+
+        # Re-roll after ✨: the last entry is a ✨ pass, so there are no mask
+        # widgets to re-run — route the press into a FRESH ✨ pass instead
+        # ("re-roll the last thing, whatever it was"). Picked up by the quick
+        # block below; quick_last's replace semantics make it swap the
+        # previous ✨ result, exactly like pressing ✨ again. The JS already
+        # forced a new random seed for the press, so it's a real variation.
+        reroll_quick = (
+            new_reroll
+            and inpainting_mode == "Refine"
+            and state.get("last_edit_kind") == "quick"
+        )
 
         # ===== Vary ×4 gate =====
         # Re-run the most recent edit's mask from its PRE-edit base, four
         # times, WITHOUT touching history — candidates are stashed and the
         # user commits one via the chooser (vary_pick above). Needs a prior
-        # edit (history > 1). Excluded when the Restore brush is active
-        # (restores are deterministic — four identical candidates would be
-        # noise); the JS blocks that combination too.
+        # edit (history > 1) whose mask widgets are still valid (same
+        # last_edit_kind gate as Re-roll). Excluded when the Restore brush
+        # is active (restores are deterministic — four identical candidates
+        # would be noise); the JS blocks that combination too.
         new_vary = vary_seq > 0 and vary_seq != state.get("vary_seq", -1)
         vary_now = (
             new_vary
             and len(state["history"]) > 1
             and inpainting_mode != "Outpaint"
             and not (bool(restore_mode) and inpainting_mode == "Refine")
+            and state.get("last_edit_kind") == "mask"
         )
         state["vary_seq"] = vary_seq
 
@@ -2559,16 +2602,23 @@ class AngeloRefine:
             and quick_refine_seq != state.get("quick_refine_seq", -1)
         )
         state["quick_refine_seq"] = quick_refine_seq
+        # Re-roll pressed while the last entry is a ✨ pass → run a fresh ✨
+        # (see the reroll_quick note above).
+        if reroll_quick:
+            new_quick = True
         if new_quick:
             # Re-roll semantics: if the latest entry is itself a ✨ result,
-            # POP it first — this press re-draws from the same source the
-            # last press used, replacing it, instead of compounding on its
-            # output (anchor-chaining converged to a fixed point and made
-            # mashing for variations useless). Manual edits in between
-            # clear the flag, so they're never discarded.
-            if state.get("quick_last") and len(state["history"]) > 1:
-                state["history"].pop()
-                _hl = state["history"][-1]
+            # this press re-draws from the same source the last press used,
+            # REPLACING it, instead of compounding on its output (anchor-
+            # chaining converged to a fixed point and made mashing for
+            # variations useless). Manual edits in between clear the flag,
+            # so they're never discarded. History is NOT popped up front —
+            # a Cancel/OOM mid-sample must not lose the previous ✨ result;
+            # the source is read from history[-2] and history[-1] is
+            # replaced only on success (commit below).
+            qr_replace = bool(state.get("quick_last")) and len(state["history"]) > 1
+            if qr_replace:
+                _hl = state["history"][-2]
                 if isinstance(_hl, tuple):
                     current, current_pixels = _hl
                 else:
@@ -2658,15 +2708,24 @@ class AngeloRefine:
                     callback=callback, disable_pbar=disable_pbar,
                     ov_guider=ov_guider, ov_sampler=ov_sampler, ov_sigmas=ov_sigmas,
                 )
-            state["history"].append((qr_refined, qr_pixels))
+            if qr_replace:
+                # Replace the previous ✨ result (cancel-safe: it stayed in
+                # history while this pass sampled).
+                state["history"][-1] = (qr_refined, qr_pixels)
+            else:
+                state["history"].append((qr_refined, qr_pixels))
+                if len(state["history"]) > _HISTORY_CAP:
+                    state["history"] = state["history"][-_HISTORY_CAP:]
             state["quick_last"] = True
-            if len(state["history"]) > _HISTORY_CAP:
-                state["history"] = state["history"][-_HISTORY_CAP:]
             state["redo_stack"] = []
             state["vary_candidates"] = None
             state["outpaint_pending"] = None
             state["click_seq"] = click_seq
             state["refine_seed_at_run"] = qr_seed
+            # ✨'s whole-canvas mask has nothing to do with the click/paint
+            # widgets — Re-roll / Vary must not re-run them over this result
+            # (press ✨ again to re-roll it instead).
+            state["last_edit_kind"] = "quick"
             current = qr_refined
             current_pixels = qr_pixels
 
@@ -2784,21 +2843,20 @@ class AngeloRefine:
         #     latest result with a fresh seed, so the region gradually
         #     morphs further with each press (change something into
         #     something else)
-        # Re-roll is the ONE exception, and it gets there for free: it
-        # popped the last attempt above, so `current` is now that attempt's
-        # PRE-edit base — re-running from here gives a fresh variation on the
-        # ORIGINAL image, swapped in for the last attempt instead of stacked.
+        # Re-roll and Vary are the exceptions: they re-run the last edit's
+        # mask from its PRE-edit base, so their sampling source is
+        # redirected to history[-2] below. History itself stays untouched
+        # until the commit (cancel-safety — a Cancel/OOM mid-sample must
+        # never lose the existing attempt).
 
         if new_click or reroll_now or vary_now:
-            # A re-roll re-runs the same mask widgets from the popped pre-
-            # edit base (current), so it flows through this same block.
-            #
-            # Vary ×4 also re-runs the same mask widgets, but from the
-            # UN-popped pre-edit base: history stays intact (the last
+            # Re-roll and Vary ×4 both re-run the same mask widgets from
+            # the UN-popped pre-edit base: history stays intact (the last
             # attempt remains history[-1]) and only the sampling source is
-            # redirected to history[-2]. Nothing commits until the user
-            # picks a candidate, so cancelling the chooser costs nothing.
-            if vary_now:
+            # redirected to history[-2]. Re-roll REPLACES history[-1] on
+            # success (commit below); Vary stashes candidates and commits
+            # nothing until the user picks one in the chooser.
+            if vary_now or reroll_now:
                 hist_prev = state["history"][-2]
                 if isinstance(hist_prev, tuple):
                     current, current_pixels = hist_prev
@@ -2893,7 +2951,7 @@ class AngeloRefine:
                         stroke_pts, r_latent,
                         scale_x, scale_y, current.device,
                     )
-                else:
+                elif click_x >= 0 and click_y >= 0:
                     cx_latent = click_x * scale_x
                     cy_latent = click_y * scale_y
                     mask = _circle_mask_latent_direct(
@@ -2901,6 +2959,12 @@ class AngeloRefine:
                         cx_latent, cy_latent, r_latent,
                         current.device,
                     )
+                else:
+                    # No click recorded (click_x = -1, e.g. right after a
+                    # Reset). Nothing to mask — an empty mask makes the
+                    # edit a no-op instead of a bogus corner-circle edit.
+                    mask = torch.zeros((1, latent_h, latent_w),
+                                       device=current.device, dtype=torch.float32)
             if sigma_latent > 0:
                 mask = _gaussian_blur_2d(mask, max(0.5, sigma_latent))
                 mask = mask.clamp(0.0, 1.0)
@@ -3161,19 +3225,46 @@ class AngeloRefine:
                     current, current_pixels = hist_last, None
             else:
                 refined, refined_pixels = pass_results[0]
-                state["history"].append((refined, refined_pixels))
-                if len(state["history"]) > _HISTORY_CAP:
-                    state["history"] = state["history"][-_HISTORY_CAP:]
-                # A genuine new edit (click or re-roll) invalidates the redo
-                # branch and any stale Vary / Outpaint stash.
-                state["redo_stack"] = []
-                state["vary_candidates"] = None
-                state["outpaint_pending"] = None
-                state["click_seq"] = click_seq
-                state["refine_seed_at_run"] = int(seed)
-                state["quick_last"] = False
-                current = refined
-                current_pixels = refined_pixels
+                if refined is refine_source:
+                    # The pass bailed and returned the source unchanged
+                    # (empty mask bbox, or Remove without a CLIP). Don't
+                    # push a duplicate history entry or wipe the redo /
+                    # vary stashes over a no-op — that killed Redo and made
+                    # the next Undo appear dead. Reload history[-1] for the
+                    # outputs (a re-roll redirected `current` to the pre-
+                    # edit base for sampling).
+                    print("[Angelo] edit was a no-op (empty mask or missing "
+                          "CLIP) — history unchanged")
+                    state["click_seq"] = click_seq
+                    hist_last = state["history"][-1]
+                    if isinstance(hist_last, tuple):
+                        current, current_pixels = hist_last
+                    else:
+                        current, current_pixels = hist_last, None
+                else:
+                    if reroll_now:
+                        # Cancel-safe replace: the attempt being re-rolled
+                        # stayed in history while sampling ran; only now,
+                        # on success, is it swapped for the fresh take.
+                        state["history"][-1] = (refined, refined_pixels)
+                    else:
+                        state["history"].append((refined, refined_pixels))
+                        if len(state["history"]) > _HISTORY_CAP:
+                            state["history"] = state["history"][-_HISTORY_CAP:]
+                    # A genuine new edit (click or re-roll) invalidates the
+                    # redo branch and any stale Vary / Outpaint stash.
+                    state["redo_stack"] = []
+                    state["vary_candidates"] = None
+                    state["outpaint_pending"] = None
+                    state["click_seq"] = click_seq
+                    state["refine_seed_at_run"] = int(seed)
+                    state["quick_last"] = False
+                    # Provenance: history[-1] is a mask-widget edit, so
+                    # Re-roll / Vary may re-run those widgets. Cleared by
+                    # Undo/Redo and the ✨ pass, whose masks don't match.
+                    state["last_edit_kind"] = "mask"
+                    current = refined
+                    current_pixels = refined_pixels
 
         out_latent = {"samples": current}
         ui_msg = {

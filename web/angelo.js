@@ -40,17 +40,26 @@ function installQueueHook() {
     app.queuePrompt = function (...args) {
         try {
             const nodes = (app.graph && app.graph._nodes) || [];
+            // Angelo-initiated queues (a click/undo/re-roll/… on ONE node)
+            // set _AngeloQueueInitiator to that node's id — the hook must
+            // then leave every OTHER node alone, or editing node A re-runs
+            // node B's held persistent mask. null = a real Queue press
+            // (ComfyUI's button or the in-node ▶ Queue): bump all holders.
+            const initiator = app._AngeloQueueInitiator;
             for (const n of nodes) {
                 if (n?.type !== NODE_NAME) continue;
+                if (initiator != null && n.id !== initiator) continue;
                 const persistW = findWidget(n, "persistent_mask");
                 if (!persistW || !persistW.value) continue;
+                // A genuine Reset is in flight on this node — don't hijack
+                // it. (Clearing `reset` here made Reset a silent no-op on
+                // persistent-mask nodes; the 1s revert timer in triggerReset
+                // already covers the stale-tick case this guarded against.)
+                const resetW = findWidget(n, "reset");
+                if (resetW && resetW.value) continue;
                 const seqW = findWidget(n, "click_seq");
                 if (!seqW) continue;
                 setWidget(seqW, ((seqW.value || 0) + 1) & 0x7FFFFFFF);
-                // Also clear `reset` so a stale tick doesn't blow away
-                // the cached latent we want to refine on top of.
-                const resetW = findWidget(n, "reset");
-                if (resetW) setWidget(resetW, false);
                 dbg("queueHook: bumped click_seq on persistent-mask node", n.id, "→", seqW.value);
             }
         } catch (e) {
@@ -89,7 +98,18 @@ function installKeyboardShortcuts() {
     for (const b of bindings) handlers[b[0]] = b;
 
     document.addEventListener("keydown", (event) => {
-        const node = _AngeloHoveredNode;
+        let node = _AngeloHoveredNode;
+        if (!node && event.key === "Escape") {
+            // The Vary chooser / Outpaint review / detect overlays cover
+            // the canvas, so the pointer's mouseleave already cleared the
+            // hover — Esc must still reach them (the outpaint header even
+            // advertises "Esc = cancel"). Fall back to whichever node owns
+            // an open overlay.
+            const nodes = (app.graph && app.graph._nodes) || [];
+            node = nodes.find(n => n?.type === NODE_NAME
+                && (isOutpaintReviewOpen(n) || isVaryChooserOpen(n)
+                    || (n._AngeloDetections && n._AngeloDetections.length)));
+        }
         if (!node) return;
 
         // Esc closes the Outpaint review first (cancels at zero cost —
@@ -253,6 +273,41 @@ function installKeyboardShortcuts() {
     }, true);  // capture phase on window guarantees it fires before ComfyUI's document listener
     
     dbg("installed keyboard shortcuts");
+}
+
+// --- One-shot migration for workflows saved on v2.0.0–v2.1.0. ---
+// Those versions had a `lir_seq` widget between `upscale_seq` and
+// `quick_prompt_mode`; v2.2.0 removed it, shifting every later positional
+// widgets_values slot left by one on load. Old widget tail:
+//     [..., upscale_seq, lir_seq, quick_prompt_mode]        (save)
+//     [..., upscale_seq, quick_prompt_mode, shrink_seq, …]  (load target)
+// so exactly TWO widgets land wrong: quick_prompt_mode receives the dead
+// lir_seq INT (→ combo validation fails at Queue time), and shrink_seq
+// receives the old quick_prompt_mode STRING. Everything after got no value
+// (the old array was shorter) and already holds its default.
+//
+// Detection is SEMANTIC, not version-based: quick_prompt_mode is a combo
+// whose serialized value is always a string in a healthy save — a number
+// there is an unambiguous marker of the pre-2.2 layout. Healthy saves are
+// a no-op, and the next save serializes the repaired values, so the shim
+// self-deactivates. (Name-keyed widgets_values formats never shift and
+// never trip the marker.)
+function migrateLegacyWidgetValues(node) {
+    const qpW = findWidget(node, "quick_prompt_mode");
+    if (!qpW || typeof qpW.value !== "number") return;   // healthy save
+    const ssW = findWidget(node, "shrink_seq");
+    const validModes = (qpW.options && qpW.options.values) || [];
+    if (ssW && typeof ssW.value === "string" && validModes.includes(ssW.value)) {
+        // The real prompt-mode string slid one slot down onto shrink_seq —
+        // recover it.
+        qpW.value = ssW.value;
+    } else {
+        // v2.0.0-era save (no quick_prompt_mode yet) — default it.
+        qpW.value = "Identity + Quality";
+    }
+    if (ssW && typeof ssW.value !== "number") ssW.value = 0;
+    console.log("[Angelo] migrated a pre-2.2 workflow save (removed lir_seq "
+        + "slot) — ✨ prompt mode restored to \"" + qpW.value + "\"");
 }
 
 app.registerExtension({
@@ -473,6 +528,8 @@ app.registerExtension({
             // microtask-delayed sync sees the final restored state.
             const node = this;
             queueMicrotask(() => {
+                try { migrateLegacyWidgetValues(node); }
+                catch (e) { dbg("legacy widget migration threw", e); }
                 try { syncAllToolbarControls(node); }
                 catch (e) { dbg("onConfigure sync threw", e); }
             });
@@ -582,7 +639,13 @@ function attachPreviewCanvas(node) {
     row1.appendChild(undoRedoWrap);
 
     const rerollBtn = makeActionButton("Re-roll", () => triggerReroll(node), "reroll");
-    rerollBtn.title = "Try the most recent edit again with a fresh seed — SAME mask, SAME starting image. Each press replaces the last attempt with a new variation (it doesn't stack on top). Make an edit first, then Re-roll to cycle seeds without re-painting or resetting. Works for clicks, brush strokes, rectangles and detected masks.";
+    rerollBtn.title = "Try the most recent edit again with a fresh seed — SAME mask, SAME starting "
+        + "image. Each press replaces the last attempt with a new variation (it doesn't stack on "
+        + "top). Make an edit first, then Re-roll to cycle seeds without re-painting or resetting. "
+        + "Works for clicks, brush strokes, rectangles and detected masks.\n\n"
+        + "After a ✨ Quick Photo Refine, Re-roll re-runs the ✨ pass instead (same as pressing ✨ "
+        + "again) — it always re-rolls the last thing you did. After an Undo/Redo it's inert until "
+        + "your next edit.";
     row1.appendChild(rerollBtn);
     node._AngeloRerollBtn = rerollBtn;
 
@@ -633,18 +696,22 @@ function attachPreviewCanvas(node) {
     // off so the toolbar can't lie about which is active.
     //
     // Remove REQUIRES Xtra-Fine, so toggling remove_mode also forces
-    // fine_upscaling on (remembering the prior state) and restores it on the way
-    // out — off, unless Xtra-Fine was already on before Remove was enabled.
+    // fine_upscaling on (remembering the prior state) and restores it on the
+    // way out — off, unless Xtra-Fine was already on before Remove was
+    // enabled. The remembered state lives in node.properties (NOT a plain JS
+    // field): LiteGraph serializes properties with the workflow, so a save
+    // made with Remove ON still restores Xtra-Fine correctly after a reload.
     const _setRemove = (on) => {
         const w = findWidget(node, "remove_mode");
         if (!w) return;
         const fw = findWidget(node, "fine_upscaling");
+        node.properties = node.properties || {};
         if (on && !w.value) {
-            node._AngeloXtraFineBeforeRemove = fw ? !!fw.value : false;
+            node.properties.angelo_xf_before_remove = fw ? !!fw.value : false;
             if (fw) setWidget(fw, true);
         } else if (!on && w.value) {
-            if (fw) setWidget(fw, !!node._AngeloXtraFineBeforeRemove);
-            node._AngeloXtraFineBeforeRemove = undefined;
+            if (fw) setWidget(fw, !!node.properties.angelo_xf_before_remove);
+            delete node.properties.angelo_xf_before_remove;
         }
         setWidget(w, on);
     };
@@ -1195,7 +1262,7 @@ function attachPreviewCanvas(node) {
     const modeWidget = findWidget(node, "mode");
     const modeOptions = (modeWidget && modeWidget.options && modeWidget.options.values)
         ? modeWidget.options.values
-        : ["Edit Mode", "Sampler Mode"];
+        : ["Sampler Mode", "Edit Mode"];
     const modeSelect = makeDropdown("Mode",
         modeOptions,
         (val) => {
@@ -1230,6 +1297,36 @@ function attachPreviewCanvas(node) {
     modeRow.appendChild(fullscreenBtn);
     node._AngeloFullscreenBtn = fullscreenBtn;
     syncFullscreenButton(node);
+
+    // ▶ Queue — the in-node twin of ComfyUI's Queue button. Same code path
+    // (app.queuePrompt via the queuePrompt() helper), so the persistent-mask
+    // queue hook and everything else behave identically — but you never have
+    // to leave the node (or fullscreen) to press it. Works in both modes:
+    // Sampler Mode = generate the base; Edit Mode = re-execute the graph
+    // (e.g. Persistent Mask re-runs, upstream changes).
+    const queueBtn = document.createElement("button");
+    queueBtn.type = "button";
+    queueBtn.textContent = "▶ Queue";
+    queueBtn.title = "Queue the workflow — identical to ComfyUI's main Queue button, right here in "
+        + "the node (works in fullscreen too).\n\n"
+        + "Sampler Mode: generates a fresh base image.\n"
+        + "Edit Mode: re-executes the graph — with Persistent Mask ON each press re-runs the held "
+        + "mask on the latest result with a fresh seed (the gradual-morph loop), and it's also the "
+        + "button to press after changing something upstream.";
+    queueBtn.style.cssText = "cursor:pointer; padding:3px 12px; font-size:11px; font-weight:bold; "
+        + "border:1px solid rgba(140, 220, 170, 0.9); border-radius:3px; "
+        + "background:rgba(30, 120, 80, 0.95); color:#fff; user-select:none; line-height:15px; "
+        + "margin-left:6px;";
+    for (const ev of ["pointerdown", "mousedown"]) {
+        queueBtn.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    queueBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        queuePrompt();
+    });
+    modeRow.appendChild(queueBtn);
+    node._AngeloQueueBtn = queueBtn;
 
     // Floating detect-mode panel — pinned top-right of the Mode row, shown
     // only while candidates are active. Holds the red Cancel button + an
@@ -1411,7 +1508,9 @@ function attachPreviewCanvas(node) {
     row4.appendChild(samplerSeedCtrlSelect);
     node._AngeloSamplerSeedCtrlSelect = samplerSeedCtrlSelect;
 
-    const samplerDenoiseInput = makeNumberInput("Smpl Denoise", { min: 0.0, max: 1.0, step: 0.05, width: 56 }, (val) => {
+    // min matches the Python widget (0.05) — a 0.0 here used to pass JS
+    // clamping but fail ComfyUI's server-side validation on the next Queue.
+    const samplerDenoiseInput = makeNumberInput("Smpl Denoise", { min: 0.05, max: 1.0, step: 0.05, width: 56 }, (val) => {
         const w = findWidget(node, "sampler_denoise");
         if (!w) return;
         setWidget(w, val);
@@ -1762,10 +1861,19 @@ function attachPreviewCanvas(node) {
         }
         node._AngeloLastMiddleDown = now;
         try { canvasWrap.setPointerCapture(event.pointerId); } catch (e) { /* noop */ }
+        // clientX/Y deltas are VISUAL px, but _AngeloPanX/Y are LAYOUT px —
+        // when the ComfyUI graph is zoomed the two differ by the graph scale,
+        // making the pan run fast/slow (#23's wheel fix, applied to pan).
+        // Capture the ratio once at drag start.
+        const wrapRect = canvasWrap.getBoundingClientRect();
         node._AngeloPanning = {
             startX: event.clientX, startY: event.clientY,
             startPanX: node._AngeloPanX || 0, startPanY: node._AngeloPanY || 0,
             pointerId: event.pointerId,
+            scaleX: (canvasWrap.clientWidth > 0 && wrapRect.width > 0)
+                ? wrapRect.width / canvasWrap.clientWidth : 1,
+            scaleY: (canvasWrap.clientHeight > 0 && wrapRect.height > 0)
+                ? wrapRect.height / canvasWrap.clientHeight : 1,
         };
         if (node._AngeloCanvas) node._AngeloCanvas.style.cursor = "grabbing";
     });
@@ -1773,8 +1881,8 @@ function attachPreviewCanvas(node) {
     canvasWrap.addEventListener("pointermove", (event) => {
         const p = node._AngeloPanning;
         if (!p) return;
-        node._AngeloPanX = p.startPanX + (event.clientX - p.startX);
-        node._AngeloPanY = p.startPanY + (event.clientY - p.startY);
+        node._AngeloPanX = p.startPanX + (event.clientX - p.startX) / (p.scaleX || 1);
+        node._AngeloPanY = p.startPanY + (event.clientY - p.startY) / (p.scaleY || 1);
         applyView(node);
     });
 
@@ -2681,6 +2789,28 @@ function _angeloModalParent(node) {
     return (node && node._AngeloFSOverlay) ? node._AngeloFSOverlay : document.body;
 }
 
+// Attach a modal backdrop: tags it (so the fullscreen Esc handler can defer
+// to it, and exitAngeloFullscreen can rescue it), appends it to the right
+// parent, and wires a generic capture-phase Esc that closes the popup. The
+// listener self-removes when the backdrop is gone regardless of HOW it was
+// closed (button, backdrop click, fullscreen teardown), so nothing leaks.
+function _angeloShowModal(node, backdrop) {
+    backdrop.classList.add("angelo-modal-backdrop");
+    const onKey = (e) => {
+        if (!backdrop.isConnected) {
+            document.removeEventListener("keydown", onKey, true);
+            return;
+        }
+        if (e.key !== "Escape") return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        document.removeEventListener("keydown", onKey, true);
+        backdrop.remove();
+    };
+    document.addEventListener("keydown", onKey, true);
+    _angeloModalParent(node).appendChild(backdrop);
+}
+
 function showSmartPhrasingPopup(node) {
     const backdrop = document.createElement("div");
     backdrop.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.6); "
@@ -2734,7 +2864,7 @@ function showSmartPhrasingPopup(node) {
     footer.appendChild(insertBtn);
     modal.appendChild(footer);
     backdrop.appendChild(modal);
-    _angeloModalParent(node).appendChild(backdrop);
+    _angeloShowModal(node, backdrop);
 
     const close = () => { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); };
     insertBtn.addEventListener("click", () => {
@@ -2744,9 +2874,8 @@ function showSmartPhrasingPopup(node) {
     });
     cancelBtn.addEventListener("click", close);
     backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
-    document.addEventListener("keydown", function onKey(e) {
-        if (e.key === "Escape") { close(); document.removeEventListener("keydown", onKey); }
-    });
+    // Esc-to-close is handled generically by _angeloShowModal (its listener
+    // self-removes with the backdrop — the bespoke one here used to leak).
 }
 
 // Reflect the current edit-target widget value into the textarea and
@@ -3112,7 +3241,7 @@ function triggerRefine(node, pixelX, pixelY, displayCX, displayCY) {
     if (wmaskpng) setWidget(wmaskpng, "");
 
     dbg("queueing workflow (click)", { click_x: wx.value, click_y: wy.value, click_seq: ws.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
 function triggerPaintRefine(node, strokePoints) {
@@ -3143,14 +3272,27 @@ function triggerPaintRefine(node, strokePoints) {
     if (wmaskpng) setWidget(wmaskpng, "");
 
     dbg("queueing workflow (paint)", { points: compact.length, click_seq: ws.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
-function queuePrompt() {
+// Queue the workflow. Pass the initiating node for Angelo-internal action
+// queues (a click/undo/re-roll/… on ONE node) — the persistent-mask queue
+// hook then leaves every OTHER Angelo node alone, so editing node A can't
+// re-run node B's held mask. Call with NO argument for a "real" Queue
+// press (the in-node ▶ Queue button), which should bump all holders just
+// like ComfyUI's own button.
+function queuePrompt(node) {
     if (typeof app.queuePrompt === "function") {
-        const ret = app.queuePrompt(0);
-        if (ret && typeof ret.then === "function") {
-            ret.catch(e => dbg("queuePrompt promise rejected", e));
+        app._AngeloQueueInitiator = (node && node.id != null) ? node.id : null;
+        try {
+            const ret = app.queuePrompt(0);
+            if (ret && typeof ret.then === "function") {
+                ret.catch(e => dbg("queuePrompt promise rejected", e));
+            }
+        } finally {
+            // The hook reads the flag synchronously during app.queuePrompt,
+            // so it's safe (and important) to clear immediately after.
+            app._AngeloQueueInitiator = null;
         }
     } else {
         dbg("ERROR: app.queuePrompt is not a function");
@@ -3253,7 +3395,13 @@ function _angeloShowImageContextMenu(node, event) {
     ];
     const LG = window.LiteGraph;
     if (LG && LG.ContextMenu) {
-        new LG.ContextMenu(items, { event, title: "Angelo" });
+        const menu = new LG.ContextMenu(items, { event, title: "Angelo" });
+        // In fullscreen the overlay sits at z-index 99990 — above the stock
+        // litecontextmenu z-index — so lift the menu root or it renders
+        // invisibly behind the overlay.
+        if (node._AngeloFSOverlay && menu && menu.root) {
+            menu.root.style.zIndex = "100001";
+        }
     }
 }
 
@@ -3298,7 +3446,7 @@ async function _uploadLoadedImage(node, file, mode, mp) {
 
     syncLoadImageControls(node);   // reveal the Unload button
     _angeloToast("Loading as base…");
-    queuePrompt();
+    queuePrompt(node);
 }
 
 // Clear the loaded image → the wired latent input takes over as base.
@@ -3307,7 +3455,7 @@ function unloadImage(node) {
     if (wImg) setWidget(wImg, "");
     syncLoadImageControls(node);
     _angeloToast("Unloaded — using latent input");
-    queuePrompt();
+    queuePrompt(node);
 }
 
 // Show the Unload button only while an image is loaded.
@@ -3540,7 +3688,7 @@ function confirmDetection(node, det) {
         node._AngeloEditedDets.add(idx);
     }
     redrawCanvasWithOverlays(node);   // immediate feedback: clicked one turns green
-    queuePrompt();
+    queuePrompt(node);
 }
 
 // Offset a closed polygon outward (delta>0) or inward (delta<0) by ~|delta|
@@ -3908,7 +4056,7 @@ function showLoadImagePopup(node, file) {
     modal.appendChild(footer);
 
     backdrop.appendChild(modal);
-    _angeloModalParent(node).appendChild(backdrop);
+    _angeloShowModal(node, backdrop);
 
     const close = () => { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); };
     cancelBtn.addEventListener("click", close);
@@ -3998,7 +4146,7 @@ function triggerGuidedRefine(node) {
     if (wsp) setWidget(wsp, "");
     if (wrp) setWidget(wrp, "");
     dbg("queueing workflow (smart guided edit)", { click_seq: ws.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
 function triggerRectRefine(node, rect) {
@@ -4031,7 +4179,7 @@ function triggerRectRefine(node, rect) {
     if (wmaskpng) setWidget(wmaskpng, "");
 
     dbg("queueing workflow (smart inpaint rect)", { x1, y1, x2, y2, click_seq: ws.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
 
@@ -4047,9 +4195,13 @@ function triggerRectRefine(node, rect) {
 function triggerUndo(node) {
     const wu = findWidget(node, "undo_seq");
     if (!wu) return;
+    // An open Vary chooser refers to the pre-undo history — close it (the
+    // backend drops its candidate stash on undo too, so a pick after this
+    // would be a no-op at best and target the wrong entry at worst).
+    if (isVaryChooserOpen(node)) hideVaryChooser(node);
     setWidget(wu, ((wu.value || 0) + 1) & 0x7FFFFFFF);
     dbg("queue undo", { undo_seq: wu.value });
-    if (typeof app.queuePrompt === "function") app.queuePrompt(0);
+    queuePrompt(node);
 }
 
 // Redo: re-apply the edit Undo most recently removed. Pure restore (like
@@ -4058,9 +4210,10 @@ function triggerUndo(node) {
 function triggerRedo(node) {
     const wr = findWidget(node, "redo_seq");
     if (!wr) return;
+    if (isVaryChooserOpen(node)) hideVaryChooser(node);   // same as Undo
     setWidget(wr, ((wr.value || 0) + 1) & 0x7FFFFFFF);
     dbg("queue redo", { redo_seq: wr.value });
-    if (typeof app.queuePrompt === "function") app.queuePrompt(0);
+    queuePrompt(node);
 }
 
 // Re-roll: redo the most recent edit with a fresh seed, same mask, same
@@ -4080,7 +4233,7 @@ function triggerReroll(node) {
     }
     setWidget(wr, ((wr.value || 0) + 1) & 0x7FFFFFFF);
     dbg("queue reroll", { reroll_seq: wr.value, seed: wseed && wseed.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
 // Vary ×4: like Re-roll, but four candidates at once + a visual pick.
@@ -4104,7 +4257,7 @@ function triggerVary(node) {
     setWidget(wv, ((wv.value || 0) + 1) & 0x7FFFFFFF);
     _angeloToast("Generating 4 variations…");
     dbg("queue vary", { vary_seq: wv.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
 function showVaryChooser(node, refs) {
@@ -4155,7 +4308,7 @@ function triggerVaryPick(node, idx) {
     setWidget(wp, idx);
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
     dbg("queue vary pick", { vary_pick: idx, vary_pick_seq: ws.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
 // Quick Photo Refine: the restoration recipe as one click. Python owns the
@@ -4172,7 +4325,7 @@ function triggerQuickPhotoRefine(node) {
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
     _angeloToast("✨ Quick Photo Refine — restoring the photo…");
     dbg("queue quick photo refine", { quick_refine_seq: ws.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
 // ⬆ 2× Pixel: pure lanczos upscale, no AI, committed directly as the new
@@ -4188,7 +4341,7 @@ function triggerPixelUpscale(node) {
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
     _angeloToast("⬆ 2× Pixel — lanczos upscale, new base (history resets)");
     dbg("queue pixel upscale", { upscale_seq: ws.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
 // ⬇ Shrink: pick a scale factor in a popup (with a live new-dimensions
@@ -4207,7 +4360,7 @@ function triggerShrink(node, scale) {
     setWidget(sqW, ((sqW.value || 0) + 1) & 0x7FFFFFFF);
     _angeloToast("⬇ Shrink — downscaling, new base (history resets)");
     dbg("queue shrink", { shrink_scale: scale, shrink_seq: sqW.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
 function showShrinkPopup(node) {
@@ -4292,7 +4445,7 @@ function showShrinkPopup(node) {
     modal.appendChild(footer);
 
     backdrop.appendChild(modal);
-    _angeloModalParent(node).appendChild(backdrop);
+    _angeloShowModal(node, backdrop);
 
     const close = () => { if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop); };
     cancelBtn.addEventListener("click", close);
@@ -4339,7 +4492,7 @@ function triggerOutpaint(node, dir) {
     const dirLabel = { left: "left", right: "right", up: "up", down: "down", all: "all sides" }[dir] || dir;
     _angeloToast(`Outpainting ${dirLabel} +${amt}px…`);
     dbg("queue outpaint", { dir, amt, outpaint_seq: ws.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
 function showOutpaintReview(node, ref) {
@@ -4370,9 +4523,19 @@ function triggerOutpaintAccept(node) {
     const wpr = findWidget(node, "outpaint_protect");
     if (wpr) setWidget(wpr, "");
     syncOutpaintControls(node);
-    _angeloToast("Committing the new canvas — this is your new base");
+    // Optimistic swap: the approved pixels are ALREADY loaded in the review
+    // overlay's <img> — show them on the canvas NOW instead of making the
+    // user stare at the old canvas for the whole commit round-trip. The URL
+    // is browser-cached so this is instant, and loadIntoCanvas also updates
+    // image_w/h + resets the view for the new dimensions. The commit run's
+    // own preview (identical pixels) replaces it seamlessly when it lands.
+    const rimg = node._AngeloOutpaintImg;
+    if (rimg && rimg.src && rimg.complete && rimg.naturalWidth > 0) {
+        loadIntoCanvas(node, rimg.src);
+    }
+    _angeloToast("New base committed — history reset");
     dbg("queue outpaint accept", { outpaint_accept_seq: ws.value });
-    queuePrompt();
+    queuePrompt(node);
 }
 
 // Same direction + amount, fresh seed. The stale stash is simply
@@ -4387,7 +4550,7 @@ function triggerOutpaintRetry(node) {
     }
     setWidget(ws, ((ws.value || 0) + 1) & 0x7FFFFFFF);
     _angeloToast("Trying the extension again with a fresh seed…");
-    queuePrompt();
+    queuePrompt(node);
 }
 
 // Which edge (if any) the cursor is near enough to for the edge-click
@@ -4489,7 +4652,7 @@ function triggerReset(node) {
     }
     if (node._AngeloPlaceholder) node._AngeloPlaceholder.style.display = "flex";
     app.graph.setDirtyCanvas(true, true);
-    if (typeof app.queuePrompt === "function") app.queuePrompt(0);
+    queuePrompt(node);
     setTimeout(() => {
         if (wr.value === true) {
             wr.value = false;
@@ -4668,6 +4831,11 @@ function enterAngeloFullscreen(node) {
         if (e.key !== "Escape") return;
         if (isOutpaintReviewOpen(node) || isVaryChooserOpen(node)
             || (node._AngeloDetections && node._AngeloDetections.length)) return;
+        // A modal popup (Smart Phrasing / Load Image / Shrink) is open
+        // inside the overlay — its own Esc handling closes it; exiting
+        // fullscreen here would destroy it (and silently discard e.g. a
+        // pasted image). Defer; the next Esc exits fullscreen.
+        if (overlay.querySelector(".angelo-modal-backdrop")) return;
         e.preventDefault();
         e.stopPropagation();
         exitAngeloFullscreen(node);
@@ -4734,6 +4902,14 @@ function exitAngeloFullscreen(node) {
     node._AngeloFSPlaceholder = null;
     node._AngeloFSPrevParent = null;
     node._AngeloFSPrevCss = null;
+
+    // Rescue any open modal popup (Smart Phrasing / Load Image / Shrink)
+    // before the overlay is destroyed — it was parented into the overlay to
+    // render above it, and must not silently die with it (e.g. a pasted
+    // image awaiting the Load Image confirm).
+    for (const md of Array.from(overlay.querySelectorAll(":scope > .angelo-modal-backdrop"))) {
+        document.body.appendChild(md);
+    }
 
     if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
     node._AngeloFSOverlay = null;
