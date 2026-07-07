@@ -192,6 +192,22 @@ def _do_sample(
     )
 
 
+def _zero_out_conditioning(cond):
+    """Zeroed-out copy of a conditioning list (same maths as ComfyUI's
+    ConditioningZeroOut node). Used as the gen bundle's negative when
+    gen_negative isn't wired — the main `negative` input can't stand in
+    because it's encoded with the EDIT model's CLIP and conditioning is
+    not portable across model families."""
+    out = []
+    for t, d in cond:
+        d = d.copy()
+        pooled = d.get("pooled_output")
+        if pooled is not None:
+            d["pooled_output"] = torch.zeros_like(pooled)
+        out.append([torch.zeros_like(t), d])
+    return out
+
+
 # Max number of latents to keep in the undo stack per node. Each FLUX 2
 # latent at 832x1776 is ~180 KB (bf16); 10 = ~1.8 MB per node. Cheap.
 _HISTORY_CAP: int = 10
@@ -1465,6 +1481,17 @@ def _encode_loaded_image(vae, ref_json: str, resize_mode: str, target_mp: float)
     return samples, pixels[:, :, :, :3].to(samples.device)
 
 
+def _pixels_to_preview(image: torch.Tensor):
+    """Save an already-decoded (B, H, W, C) float image batch to the temp
+    directory in the same format PreviewImage uses. Returns
+    (image_tensor, list_of_image_refs). Split out of _decode_to_preview
+    for paths that already hold pixels (the gen-bundle base generation
+    previews the GEN VAE's decode, not its edit-VAE round-trip)."""
+    previewer = comfy_nodes.PreviewImage()
+    ui = previewer.save_images(image, filename_prefix="Angelo_preview")
+    return image, ui["ui"]["images"]
+
+
 def _decode_to_preview(vae, latent_samples: torch.Tensor):
     """Decode the latent and save to the temp directory in the same
     format PreviewImage uses, so we can return the same ui dict shape.
@@ -1473,11 +1500,7 @@ def _decode_to_preview(vae, latent_samples: torch.Tensor):
     {filename, subfolder, type} dict.
     """
     image = _vae_decode(vae, latent_samples)  # (B, H, W, C) float in [0, 1]
-
-    # Reuse PreviewImage's save logic via a transient instance.
-    previewer = comfy_nodes.PreviewImage()
-    ui = previewer.save_images(image, filename_prefix="Angelo_preview")
-    return image, ui["ui"]["images"]
+    return _pixels_to_preview(image)
 
 
 class AngeloRefine:
@@ -1942,7 +1965,11 @@ class AngeloRefine:
                                                               "'Angelo — Overrides' node to "
                                                               "drive steps / cfg / sampler / "
                                                               "scheduler from your workflow "
-                                                              "instead of the toolbar."}),
+                                                              "instead of the toolbar — and/or "
+                                                              "to supply a dedicated GENERATION "
+                                                              "model (gen bundle): Sampler Mode "
+                                                              "generates the base with it, then "
+                                                              "the main model handles all edits."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -2046,6 +2073,14 @@ class AngeloRefine:
         ov_guider = None
         ov_sampler = None
         ov_sigmas = None
+        ov_gen_model = None
+        ov_gen_positive = None
+        ov_gen_negative = None
+        ov_gen_vae = None
+        ov_gen_steps = 25
+        ov_gen_cfg = 5.0
+        ov_gen_sampler_name = "euler"
+        ov_gen_scheduler = "normal"
         if isinstance(overrides, dict):
             if overrides.get("steps") is not None:
                 steps = overrides["steps"]
@@ -2059,6 +2094,24 @@ class AngeloRefine:
             ov_guider = overrides.get("guider")
             ov_sampler = overrides.get("sampler")
             ov_sigmas = overrides.get("sigmas")
+            # Gen bundle: a second model stack used ONLY by Sampler Mode's
+            # base generation (see the Sampler Mode branch). Edit passes
+            # always run on the main edit model regardless of this bundle.
+            ov_gen_model = overrides.get("gen_model")
+            ov_gen_positive = overrides.get("gen_positive")
+            ov_gen_negative = overrides.get("gen_negative")
+            ov_gen_vae = overrides.get("gen_vae")
+            # Explicit None checks, NOT `or` fallbacks: gen_cfg 0.0 is a
+            # legal widget value and falsy — `or` would silently sample at
+            # the default instead.
+            if overrides.get("gen_steps") is not None:
+                ov_gen_steps = int(overrides["gen_steps"])
+            if overrides.get("gen_cfg") is not None:
+                ov_gen_cfg = float(overrides["gen_cfg"])
+            if overrides.get("gen_sampler_name") is not None:
+                ov_gen_sampler_name = overrides["gen_sampler_name"]
+            if overrides.get("gen_scheduler") is not None:
+                ov_gen_scheduler = overrides["gen_scheduler"]
 
         node_id = str(unique_id)
         state = _STATE.get(node_id)
@@ -2135,6 +2188,12 @@ class AngeloRefine:
         # and an already-5D latent is returned unchanged. Done once here so
         # every downstream path — Sampler Mode, the Edit-Mode history seed,
         # the fingerprint, and the refine round-trips — sees the right shape.
+        # incoming_pre_fix: kept for the gen-bundle path, which must run
+        # fix_empty_latent_channels against the GEN model instead (its
+        # latent channel count / dimensionality can differ from the edit
+        # model's). The fingerprint below stays EDIT-model-fixed so Edit
+        # Mode's next-run comparison sees the same value.
+        incoming_pre_fix = incoming
         incoming = comfy.sample.fix_empty_latent_channels(model, incoming)
         incoming_fp = _latent_fingerprint(incoming)
 
@@ -2182,26 +2241,143 @@ class AngeloRefine:
         # the result as the new base. All toolbar / canvas / refine logic is
         # skipped — those are Edit Mode concerns.
         if mode == "Sampler Mode":
-            # #21: skip the live-preview callback when the user has
-            # disabled it via Overrides — keeps ComfyUI's global preview
-            # on for other samplers but stops it squashing Angelo's editor.
-            callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
             disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
-            noise = comfy.sample.prepare_noise(incoming, sampler_seed, None)
-            # #8: _do_sample dispatches to the custom guider path when
-            # ov_guider/ov_sampler/ov_sigmas are all wired, otherwise
-            # falls back to the standard comfy.sample.sample(...) call.
-            new_latent = _do_sample(
-                guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
-                model=model, noise=noise,
-                steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
-                positive=positive, negative=negative,
-                source_latent=incoming,
-                denoise=sampler_denoise,
-                callback=callback,
-                disable_pbar=disable_pbar,
-                seed=sampler_seed,
-            )
+            new_pixels = None
+            gen_wired = (ov_gen_model is not None or ov_gen_positive is not None
+                         or ov_gen_vae is not None or ov_gen_negative is not None)
+            if gen_wired:
+                # ===== Gen-bundle path =====
+                # Generate the base with a DEDICATED generation model, then
+                # cross the VAE boundary into the edit model's latent space:
+                # gen sample → gen-VAE decode → edit-VAE encode. Everything
+                # after this (history, refines, outpaint) runs on the edit
+                # model exactly as if the pixels had come from Load Image.
+                # Raise on partial wiring rather than silently falling back
+                # — a user who wired gen_model clearly intended this path.
+                if ov_gen_model is None or ov_gen_positive is None or ov_gen_vae is None:
+                    raise ValueError(
+                        "Angelo: the Overrides gen bundle needs gen_model + "
+                        "gen_positive + gen_vae all wired (gen_negative is "
+                        "optional). Wire the missing input(s) or disconnect "
+                        "the bundle."
+                    )
+                if base_from_wired_latent:
+                    # The wired latent defines the output dimensions. It must
+                    # be in the GEN model's latent space (typically an
+                    # EmptyLatentImage sized for the GEN VAE's ratio) — fix
+                    # channels for the GEN model, then sanity-check the shape
+                    # so a wrong-space latent fails HERE with a clear message
+                    # instead of deep inside the gen UNet with a conv error.
+                    gen_in = comfy.sample.fix_empty_latent_channels(
+                        ov_gen_model, incoming_pre_fix
+                    )
+                    try:
+                        gen_lf = ov_gen_model.get_model_object("latent_format")
+                        gen_lf_channels = int(gen_lf.latent_channels)
+                        gen_lf_5d = getattr(gen_lf, "latent_dimensions", 2) == 3
+                    except Exception:
+                        gen_lf_channels = None
+                        gen_lf_5d = None
+                    if gen_lf_5d is False and gen_in.ndim == 5:
+                        # 5D latent (Qwen/Wan-native empty latent for the EDIT
+                        # model) into a 4D-latent gen model: drop a singleton
+                        # frame axis; anything else is a real mismatch.
+                        if gen_in.shape[2] == 1:
+                            gen_in = gen_in.squeeze(2)
+                        else:
+                            raise ValueError(
+                                "Angelo: the wired latent is a multi-frame video "
+                                "latent — gen_model is an image model and can't "
+                                "generate from it. Wire an empty latent sized "
+                                "for the GEN model instead."
+                            )
+                    if gen_lf_channels is not None and gen_in.shape[1] != gen_lf_channels:
+                        raise ValueError(
+                            f"Angelo: the wired latent has {gen_in.shape[1]} "
+                            f"channels but gen_model expects {gen_lf_channels} — "
+                            "it isn't in the gen model's latent space. Wire an "
+                            "empty latent made for the GEN model (a plain "
+                            "EmptyLatentImage for SD-class models). Note the "
+                            "latent also sets the output size via the GEN "
+                            "VAE's ratio, not the edit VAE's."
+                        )
+                else:
+                    # No wired latent (cached base / loaded image): derive the
+                    # gen-space latent by encoding the base PIXELS with the
+                    # gen VAE. At denoise 1.0 only the shape matters; below
+                    # 1.0 this is a true img2img on the current base.
+                    base_px = forced_pixels
+                    if base_px is None and state is not None:
+                        base_px = state.get("source_pixels")
+                    if base_px is None:
+                        base_px = _vae_decode(vae, incoming)
+                    gen_in = _vae_encode(ov_gen_vae, base_px[:, :, :, :3])
+                # Announce the generation resolution: an empty latent authored
+                # for the EDIT VAE's ratio silently generates at the wrong
+                # size with a different-ratio gen VAE (64x64 latent = 1024px
+                # at 16x but 512px at 8x) — undetectable from the latent
+                # alone, so at least make it visible in the console.
+                try:
+                    _gr = int(ov_gen_vae.spacial_compression_decode())
+                except Exception:
+                    _gr = int(getattr(ov_gen_vae, "downscale_ratio", 8) or 8)
+                print(f"[Angelo] gen bundle: generating "
+                      f"{gen_in.shape[-1] * _gr}x{gen_in.shape[-2] * _gr} "
+                      f"with the gen model")
+                # #21: same live-preview opt-out as the standard path.
+                callback = None if disable_live_preview else latent_preview.prepare_callback(
+                    ov_gen_model, ov_gen_steps
+                )
+                noise = comfy.sample.prepare_noise(gen_in, sampler_seed, None)
+                gen_negative_eff = (ov_gen_negative if ov_gen_negative is not None
+                                    else _zero_out_conditioning(ov_gen_positive))
+                # Deliberately NOT passing the guider trio: a wired GUIDER
+                # wraps the EDIT model's conds; it can't drive the gen model.
+                gen_latent = _do_sample(
+                    guider=None, sampler=None, sigmas=None,
+                    model=ov_gen_model, noise=noise,
+                    steps=ov_gen_steps, cfg=ov_gen_cfg,
+                    sampler_name=ov_gen_sampler_name, scheduler=ov_gen_scheduler,
+                    positive=ov_gen_positive, negative=gen_negative_eff,
+                    source_latent=gen_in,
+                    denoise=sampler_denoise,
+                    callback=callback,
+                    disable_pbar=disable_pbar,
+                    seed=sampler_seed,
+                )
+                gen_pixels = _vae_decode(ov_gen_vae, gen_latent)[:, :, :, :3]
+                # Crop to a multiple of 16 so any edit VAE (8x or 16x) is
+                # happy — same rule as _encode_loaded_image. An 8x gen VAE
+                # can emit dims the 16x edit VAE can't take.
+                h16 = max(16, (gen_pixels.shape[1] // 16) * 16)
+                w16 = max(16, (gen_pixels.shape[2] // 16) * 16)
+                if (h16, w16) != (gen_pixels.shape[1], gen_pixels.shape[2]):
+                    gen_pixels = gen_pixels[:, :h16, :w16, :]
+                new_latent = _vae_encode(vae, gen_pixels)
+                # Preview + history pixels are the GEN VAE's decode — what
+                # the generation model actually produced — not the edit-VAE
+                # round-trip of it.
+                new_pixels = gen_pixels.to(new_latent.device)
+            else:
+                # #21: skip the live-preview callback when the user has
+                # disabled it via Overrides — keeps ComfyUI's global preview
+                # on for other samplers but stops it squashing Angelo's editor.
+                callback = None if disable_live_preview else latent_preview.prepare_callback(model, steps)
+                noise = comfy.sample.prepare_noise(incoming, sampler_seed, None)
+                # #8: _do_sample dispatches to the custom guider path when
+                # ov_guider/ov_sampler/ov_sigmas are all wired, otherwise
+                # falls back to the standard comfy.sample.sample(...) call.
+                new_latent = _do_sample(
+                    guider=ov_guider, sampler=ov_sampler, sigmas=ov_sigmas,
+                    model=model, noise=noise,
+                    steps=steps, cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                    positive=positive, negative=negative,
+                    source_latent=incoming,
+                    denoise=sampler_denoise,
+                    callback=callback,
+                    disable_pbar=disable_pbar,
+                    seed=sampler_seed,
+                )
             # Replace the cache with the freshly-sampled base. Drops the
             # undo history (it's irrelevant — we have a brand-new image).
             #
@@ -2219,7 +2395,7 @@ class AngeloRefine:
             # next, and (b) restore this value if the user later switches
             # the control to "fixed".
             _STATE[node_id] = {
-                "history": [(new_latent, None)],
+                "history": [(new_latent, new_pixels)],
                 "click_seq": click_seq,
                 "undo_seq": undo_seq,
                 # Anchor every action-seq to its current widget value so a
@@ -2247,8 +2423,13 @@ class AngeloRefine:
                 "Angelo_mode": ["Sampler Mode"],
                 "Angelo_sampler_seed_at_run": [int(sampler_seed)],
             }
-            # Preview always decodes now (auto_decode deprecated).
-            image, image_refs = _decode_to_preview(vae, new_latent)
+            # Preview always decodes now (auto_decode deprecated). Gen-bundle
+            # path already holds the gen VAE's pixels — preview those rather
+            # than the edit-VAE round-trip of them.
+            if new_pixels is not None:
+                image, image_refs = _pixels_to_preview(new_pixels)
+            else:
+                image, image_refs = _decode_to_preview(vae, new_latent)
             ui_msg["Angelo_preview"] = image_refs
             # Freshly-generated base IS the source image — cache + emit it.
             # The preview refs double as the source refs for the JS
@@ -3337,7 +3518,22 @@ class AngeloOverrides:
     combo dropdowns, -1 for INT / FLOAT) meaning "don't override this
     one — use Angelo's toolbar value". Display flags default to the
     same behaviour Angelo has without an Overrides node connected, so
-    leaving them alone is a no-op."""
+    leaving them alone is a no-op.
+
+    Gen bundle (generation model): wire gen_model + gen_positive +
+    gen_vae (gen_negative optional) to make Sampler Mode generate the
+    base with a DIFFERENT model than the edit model — e.g. generate
+    with FLUX dev / SDXL for look, then click-to-edit with FLUX 2 Klein
+    or Qwen-Image-Edit. Angelo samples with the gen stack using the
+    gen_* settings below, decodes with gen_vae, and re-encodes the
+    pixels with the main edit VAE so the whole edit session stays in
+    the edit model's latent space. Edit Mode never uses the gen bundle.
+    Seed and denoise for the base generation stay on Angelo's toolbar
+    (sampler_seed / Smpl Denoise) so the seed controls keep working.
+
+    WIDGET ORDER IS APPEND-ONLY: this node lives in saved workflows
+    with positional widgets_values — new widgets go after gen_scheduler,
+    never between existing ones."""
 
     _SENTINEL = "(toolbar)"
 
@@ -3383,6 +3579,55 @@ class AngeloOverrides:
                 "guider": ("GUIDER",),
                 "sampler": ("SAMPLER",),
                 "sigmas": ("SIGMAS",),
+                # Gen bundle: a SECOND model stack used ONLY for Sampler
+                # Mode base generation. gen_positive/gen_negative must be
+                # encoded with the GEN model's own CLIP — conditioning is
+                # not portable across model families. gen_negative is
+                # optional (falls back to a zeroed-out copy of
+                # gen_positive, same as ConditioningZeroOut).
+                "gen_model": ("MODEL", {"tooltip": "Generation model for Sampler Mode. "
+                                                   "When wired (with gen_positive + "
+                                                   "gen_vae), Angelo generates the base "
+                                                   "with THIS model, then hands the "
+                                                   "pixels to the edit model for the "
+                                                   "editing session. Size Angelo's wired "
+                                                   "latent for THIS model's VAE ratio "
+                                                   "(a plain EmptyLatentImage for "
+                                                   "SD-class models)."}),
+                "gen_positive": ("CONDITIONING", {"tooltip": "Positive conditioning for "
+                                                             "gen_model — encode with the "
+                                                             "GEN model's CLIP, not the "
+                                                             "edit model's."}),
+                "gen_negative": ("CONDITIONING", {"tooltip": "Optional negative for "
+                                                             "gen_model. Unwired = zeroed "
+                                                             "gen_positive (like "
+                                                             "ConditioningZeroOut)."}),
+                "gen_vae": ("VAE", {"tooltip": "VAE matching gen_model — used to decode "
+                                               "the generated base before it is re-"
+                                               "encoded with the edit VAE."}),
+                # ===== Gen-bundle settings (append-only widget tail) =====
+                # Only read when gen_model is wired above. Real defaults, no
+                # sentinels — there is no toolbar value to fall back to
+                # because these describe the SECOND model. OPTIONAL, not
+                # required: pre-gen-bundle API-format exports don't carry
+                # these keys, and ComfyUI's prompt validation rejects a
+                # missing REQUIRED input before build()'s signature defaults
+                # can apply. Optional widgets look identical in the UI but
+                # let old API prompts keep validating.
+                "gen_steps": ("INT", {"default": 25, "min": 1, "max": 100, "step": 1,
+                                      "tooltip": "[Gen bundle] Steps for the base "
+                                                 "generation with gen_model."}),
+                "gen_cfg": ("FLOAT", {"default": 5.0, "min": 0.0, "max": 30.0, "step": 0.1,
+                                      "tooltip": "[Gen bundle] CFG for the base "
+                                                 "generation with gen_model."}),
+                "gen_sampler_name": (list(comfy.samplers.KSampler.SAMPLERS),
+                                     {"default": "euler",
+                                      "tooltip": "[Gen bundle] Sampler for the base "
+                                                 "generation with gen_model."}),
+                "gen_scheduler": (list(comfy.samplers.KSampler.SCHEDULERS),
+                                  {"default": "normal",
+                                   "tooltip": "[Gen bundle] Scheduler for the base "
+                                              "generation with gen_model."}),
             },
         }
 
@@ -3394,11 +3639,16 @@ class AngeloOverrides:
         "Bundle Angelo settings into one wire that drives them from "
         "your workflow instead of the toolbar: steps / cfg / sampler / "
         "scheduler (per-field opt-in via sentinel defaults), plus the "
-        "disable_live_preview flag for #21."
+        "disable_live_preview flag for #21. Also carries an optional "
+        "gen bundle (gen_model / gen_positive / gen_negative / gen_vae "
+        "+ gen_* settings): generate the base in Sampler Mode with a "
+        "dedicated generation model, then edit with the main edit model."
     )
 
     def build(self, steps, cfg, sampler_name, scheduler, disable_live_preview,
-              guider=None, sampler=None, sigmas=None):
+              gen_steps=25, gen_cfg=5.0, gen_sampler_name="euler", gen_scheduler="normal",
+              guider=None, sampler=None, sigmas=None,
+              gen_model=None, gen_positive=None, gen_negative=None, gen_vae=None):
         bundle = {
             "steps": steps if isinstance(steps, int) and steps >= 1 else None,
             "cfg": float(cfg) if isinstance(cfg, (int, float)) and cfg >= 0 else None,
@@ -3410,6 +3660,16 @@ class AngeloOverrides:
             "guider": guider,
             "sampler": sampler,
             "sigmas": sigmas,
+            # Gen bundle — None if not wired. Angelo validates the
+            # model+positive+vae triple at use time (Sampler Mode only).
+            "gen_model": gen_model,
+            "gen_positive": gen_positive,
+            "gen_negative": gen_negative,
+            "gen_vae": gen_vae,
+            "gen_steps": int(gen_steps),
+            "gen_cfg": float(gen_cfg),
+            "gen_sampler_name": gen_sampler_name,
+            "gen_scheduler": gen_scheduler,
         }
         return (bundle,)
 
