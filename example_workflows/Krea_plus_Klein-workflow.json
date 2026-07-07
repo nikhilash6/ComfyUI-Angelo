@@ -769,190 +769,6 @@
       ]
     },
     {
-      "id": 96,
-      "type": "AngeloRefine",
-      "pos": [
-        2179.7537442738303,
-        922.3099063751655
-      ],
-      "size": [
-        2090.5445236498463,
-        2053.9486400088363
-      ],
-      "flags": {},
-      "order": 22,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 131
-        },
-        {
-          "name": "positive",
-          "type": "CONDITIONING",
-          "link": 132
-        },
-        {
-          "name": "negative",
-          "type": "CONDITIONING",
-          "link": 133
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 134
-        },
-        {
-          "name": "clip",
-          "shape": 7,
-          "type": "CLIP",
-          "link": 135
-        },
-        {
-          "name": "latent",
-          "shape": 7,
-          "type": "LATENT",
-          "link": 144
-        },
-        {
-          "name": "overrides",
-          "shape": 7,
-          "type": "ANGELO_OVERRIDES",
-          "link": 138
-        }
-      ],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            137
-          ]
-        },
-        {
-          "name": "latent",
-          "type": "LATENT",
-          "links": null
-        },
-        {
-          "name": "source_image",
-          "type": "IMAGE",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfyui-angelo",
-        "ver": "769877b2b650d7adeee67fa6c79e7cfafa8ae153",
-        "Node name for S&R": "AngeloRefine",
-        "aux_id": "shootthesound/ComfyUI-Angelo"
-      },
-      "widgets_values": [
-        "Sampler Mode",
-        1,
-        7377617688414779,
-        "randomize",
-        2276336439806871,
-        "randomize",
-        4,
-        1,
-        "euler",
-        "simple",
-        0.85,
-        44,
-        24,
-        676,
-        51,
-        6,
-        1504,
-        1504,
-        0,
-        false,
-        true,
-        false,
-        1,
-        8,
-        "lanczos",
-        "Refine",
-        "(none)",
-        64,
-        false,
-        true,
-        "[[676,51],[679,53],[681,55],[683,57],[685,58],[687,60],[690,62],[692,64],[695,66],[698,68],[701,70],[704,73],[706,75],[710,78],[712,80],[715,82],[717,85],[720,86],[723,88],[725,91],[727,92],[729,94],[732,95],[733,97],[737,99],[740,101],[742,102],[745,104],[748,107],[750,109],[752,110],[754,112],[757,114],[761,117],[763,118],[765,119],[767,120],[769,121],[771,122],[774,124],[776,125],[779,127],[782,130],[785,131],[787,133],[790,136],[793,138],[796,141],[799,143],[801,145],[804,147],[806,148],[808,150],[810,151]]",
-        "",
-        true,
-        "make it midnight starry night",
-        "",
-        "",
-        0,
-        "keep",
-        1.5,
-        "",
-        11,
-        "",
-        0,
-        false,
-        "{\"active\":0,\"slots\":[{\"pos\":\"make it midnight starry night\",\"neg\":\"\"},{\"pos\":\"\",\"neg\":\"\"},{\"pos\":\"\",\"neg\":\"\"},{\"pos\":\"\",\"neg\":\"\"},{\"pos\":\"\",\"neg\":\"\"},{\"pos\":\"\",\"neg\":\"\"}]}",
-        0,
-        -1,
-        0,
-        9,
-        "left",
-        256,
-        64,
-        9,
-        "",
-        "prepend",
-        false,
-        10,
-        0,
-        0,
-        "Use Area Prompt",
-        0,
-        0.5,
-        false,
-        "",
-        ""
-      ]
-    },
-    {
-      "id": 97,
-      "type": "SaveImage",
-      "pos": [
-        4472.39941017563,
-        960.361874784547
-      ],
-      "size": [
-        979.5016155316771,
-        1048.0999695213866
-      ],
-      "flags": {},
-      "order": 23,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 137
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.21.1",
-        "Node name for S&R": "SaveImage"
-      },
-      "widgets_values": [
-        "ComfyUI"
-      ]
-    },
-    {
       "id": 62,
       "type": "PrimitiveStringMultiline",
       "pos": [
@@ -1215,6 +1031,190 @@
       ],
       "color": "#232",
       "bgcolor": "#353"
+    },
+    {
+      "id": 96,
+      "type": "AngeloRefine",
+      "pos": [
+        2179.7537442738303,
+        922.3099063751655
+      ],
+      "size": [
+        1712.7667458720684,
+        1577.18096324116
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 131
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 132
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 133
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 134
+        },
+        {
+          "name": "clip",
+          "shape": 7,
+          "type": "CLIP",
+          "link": 135
+        },
+        {
+          "name": "latent",
+          "shape": 7,
+          "type": "LATENT",
+          "link": 144
+        },
+        {
+          "name": "overrides",
+          "shape": 7,
+          "type": "ANGELO_OVERRIDES",
+          "link": 138
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            137
+          ]
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": null
+        },
+        {
+          "name": "source_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-angelo",
+        "ver": "769877b2b650d7adeee67fa6c79e7cfafa8ae153",
+        "Node name for S&R": "AngeloRefine",
+        "aux_id": "shootthesound/ComfyUI-Angelo"
+      },
+      "widgets_values": [
+        "Sampler Mode",
+        1,
+        7377617688414779,
+        "fixed",
+        2276336439806871,
+        "randomize",
+        4,
+        1,
+        "euler",
+        "simple",
+        0.85,
+        44,
+        24,
+        676,
+        51,
+        6,
+        1504,
+        1504,
+        0,
+        false,
+        true,
+        false,
+        1,
+        8,
+        "lanczos",
+        "Refine",
+        "(none)",
+        64,
+        false,
+        true,
+        "[[676,51],[679,53],[681,55],[683,57],[685,58],[687,60],[690,62],[692,64],[695,66],[698,68],[701,70],[704,73],[706,75],[710,78],[712,80],[715,82],[717,85],[720,86],[723,88],[725,91],[727,92],[729,94],[732,95],[733,97],[737,99],[740,101],[742,102],[745,104],[748,107],[750,109],[752,110],[754,112],[757,114],[761,117],[763,118],[765,119],[767,120],[769,121],[771,122],[774,124],[776,125],[779,127],[782,130],[785,131],[787,133],[790,136],[793,138],[796,141],[799,143],[801,145],[804,147],[806,148],[808,150],[810,151]]",
+        "",
+        false,
+        "",
+        "",
+        "",
+        0,
+        "keep",
+        1.5,
+        "",
+        11,
+        "",
+        0,
+        false,
+        "{\"active\":0,\"slots\":[{\"pos\":\"\",\"neg\":\"\"},{\"pos\":\"\",\"neg\":\"\"},{\"pos\":\"\",\"neg\":\"\"},{\"pos\":\"\",\"neg\":\"\"},{\"pos\":\"\",\"neg\":\"\"},{\"pos\":\"\",\"neg\":\"\"}]}",
+        0,
+        -1,
+        0,
+        9,
+        "left",
+        256,
+        64,
+        9,
+        "",
+        "prepend",
+        false,
+        10,
+        0,
+        0,
+        "Use Area Prompt",
+        0,
+        0.5,
+        false,
+        "",
+        ""
+      ]
+    },
+    {
+      "id": 97,
+      "type": "SaveImage",
+      "pos": [
+        3981.3196348939555,
+        934.9730917972394
+      ],
+      "size": [
+        979.5016155316771,
+        1048.0999695213866
+      ],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 137
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.21.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "ComfyUI"
+      ]
     }
   ],
   "links": [
@@ -1468,10 +1468,10 @@
     "VHS_MetadataImage": true,
     "VHS_KeepIntermediate": true,
     "ds": {
-      "scale": 0.34522712143931816,
+      "scale": 0.658845000000001,
       "offset": [
-        2630.67089645961,
-        287.8102401318729
+        -404.1256223958742,
+        -594.0942088652215
       ]
     }
   },
