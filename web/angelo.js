@@ -310,6 +310,65 @@ function migrateLegacyWidgetValues(node) {
         + "slot) — ✨ prompt mode restored to \"" + qpW.value + "\"");
 }
 
+// --- Generic type-sanity sweep for ANY misaligned old save (#33). ---
+// Positional widgets_values from sufficiently old versions (v1.8 etc.) can
+// land values on the wrong widgets in ways the specific shim above doesn't
+// recognise — e.g. an old text widget's "" arriving on the outpaint_seq INT,
+// which then fails ComfyUI's server-side prompt validation ("invalid literal
+// for int()") before any of our Python runs. This sweep doesn't try to
+// recover meaning; it guarantees TYPE validity so the node can queue at all:
+// number widgets must hold finite numbers, combos must hold a listed option,
+// booleans must hold booleans. Anything else resets to the widget's
+// definition default (snapshotted in onNodeCreated, which runs before the
+// serialized values are restored). Worst case equals the manual
+// right-click → Fix node (recreate) workaround, minus the manual step.
+// Healthy saves are a strict no-op. MUST run AFTER migrateLegacyWidgetValues
+// — the specific shim recovers real values and its detection marker (a
+// number on the quick_prompt_mode combo) is exactly the kind of state this
+// sweep would otherwise reset to a default first.
+function sanitizeWidgetTypes(node) {
+    const defaults = node._AngeloWidgetDefaults;
+    if (!defaults || !node.widgets) return;
+    const repaired = [];
+    for (const w of node.widgets) {
+        if (!w || !(w.name in defaults)) continue;   // DOM/custom widgets: skip
+        const d = defaults[w.name];
+        const comboValues = (w.options && Array.isArray(w.options.values))
+            ? w.options.values : null;
+        if (comboValues) {
+            if (!comboValues.includes(w.value)) {
+                w.value = comboValues.includes(d) ? d : comboValues[0];
+                repaired.push(w.name);
+            }
+        } else if (typeof d === "number") {
+            if (typeof w.value !== "number" || !Number.isFinite(w.value)) {
+                // A numeric STRING is a plausibly-real value (some formats
+                // stringify numbers) — keep it. "" / null / junk → default.
+                const n = (typeof w.value === "string" && w.value.trim() !== "")
+                    ? Number(w.value) : NaN;
+                w.value = Number.isFinite(n) ? n : d;
+                repaired.push(w.name);
+            }
+        } else if (typeof d === "boolean") {
+            if (typeof w.value !== "boolean") {
+                w.value = d;
+                repaired.push(w.name);
+            }
+        } else if (typeof d === "string") {
+            if (typeof w.value !== "string") {
+                w.value = String(w.value == null ? "" : w.value);
+                repaired.push(w.name);
+            }
+        }
+    }
+    if (repaired.length) {
+        console.log("[Angelo] repaired " + repaired.length + " misaligned widget "
+            + "value(s) from an older save (" + repaired.join(", ") + ") — the "
+            + "node can queue again. If any toolbar setting looks off, "
+            + "right-click → Fix node (recreate) for a fully fresh layout.");
+    }
+}
+
 app.registerExtension({
     name: "Angelo.ClickToRefine",
 
@@ -325,6 +384,16 @@ app.registerExtension({
         const origOnNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
+            // Snapshot every widget's definition default BEFORE a workflow
+            // load restores serialized values (onConfigure runs after this)
+            // and BEFORE attachPreviewCanvas adds the DOM widget — feeds
+            // the sanitizeWidgetTypes sweep for misaligned old saves (#33).
+            this._AngeloWidgetDefaults = {};
+            if (this.widgets) {
+                for (const w of this.widgets) {
+                    if (w && w.name != null) this._AngeloWidgetDefaults[w.name] = w.value;
+                }
+            }
             hideMechanicalWidgets(this);
             attachPreviewCanvas(this);
             // Force LiteGraph to recompute layout now that hidden widgets
@@ -530,6 +599,10 @@ app.registerExtension({
             queueMicrotask(() => {
                 try { migrateLegacyWidgetValues(node); }
                 catch (e) { dbg("legacy widget migration threw", e); }
+                // AFTER the specific shim (it recovers real values; this
+                // one guarantees type validity for anything else) — #33.
+                try { sanitizeWidgetTypes(node); }
+                catch (e) { dbg("widget type sweep threw", e); }
                 try { syncAllToolbarControls(node); }
                 catch (e) { dbg("onConfigure sync threw", e); }
             });
